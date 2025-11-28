@@ -38,15 +38,17 @@ export const login = async (req, res, next) => {
     });
 
     res.json({
-      success: true,
-      token,
-      usuario: {
-        id: user.id,
-        rut: user.rut,
-        nombre_usuario: user.nombre_usuario,
-        tipo_usuario: user.tipo_usuario,
-      },
-    });
+  success: true,
+  token,
+  usuario: {
+    id: user.id,
+    nombre_usuario: user.nombre_usuario,
+    rut: user.rut,
+    tipo_usuario: user.tipo_usuario,
+    activo: user.activo,
+  },
+});
+
 
   } catch (error) {
     next(error);
