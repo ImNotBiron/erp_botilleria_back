@@ -12,7 +12,7 @@ export async function listarPromosFijas() {
       p.activa,
       COUNT(d.id) AS total_productos
     FROM promociones p
-    LEFT JOIN promociones_detalles d ON d.id_promocion = p.id
+    LEFT JOIN promociones_detalle d ON d.id_promocion = p.id
     WHERE p.tipo_promocion = 'FIJA'
     GROUP BY p.id
     ORDER BY p.nombre ASC
@@ -49,7 +49,7 @@ export async function obtenerPromoFija(id) {
       cantidad,
       es_gratis,
       es_variable
-    FROM promociones_detalles
+    FROM promociones_detalle
     WHERE id_promocion = ?
   `,
     [id]
@@ -84,7 +84,7 @@ export async function crearPromoFija({ nombre, descripcion, precio_promocion, ac
 
     await conn.query(
       `
-      INSERT INTO promociones_detalles (id_promocion, id_producto, cantidad, es_gratis, es_variable)
+      INSERT INTO promociones_detalle (id_promocion, id_producto, cantidad, es_gratis, es_variable)
       VALUES ?
     `,
       [values]
@@ -116,7 +116,7 @@ export async function actualizarPromoFija(id, { nombre, descripcion, precio_prom
       [nombre, descripcion ?? null, precio_promocion, activa ? 1 : 0, id]
     );
 
-    await conn.query("DELETE FROM promociones_detalles WHERE id_promocion = ?", [id]);
+    await conn.query("DELETE FROM promociones_detalle WHERE id_promocion = ?", [id]);
 
     const values = detalle.map((d) => [
       id,
@@ -128,7 +128,7 @@ export async function actualizarPromoFija(id, { nombre, descripcion, precio_prom
 
     await conn.query(
       `
-      INSERT INTO promociones_detalles (id_promocion, id_producto, cantidad, es_gratis, es_variable)
+      INSERT INTO promociones_detalle (id_promocion, id_producto, cantidad, es_gratis, es_variable)
       VALUES ?
     `,
       [values]
