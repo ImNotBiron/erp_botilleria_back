@@ -1,196 +1,156 @@
 // src/services/promociones.service.js
-
 import pool from "../config/db.js";
 
-/* ============================================================
-   1) CREAR PROMOCIÓN
-============================================================ */
-export const crearPromocion = async (
-  { nombre, descripcion, tipo_promocion, precio_promocion },
-  conn
-) => {
-
-  if (!nombre || !tipo_promocion)
-    throw new Error("Nombre y tipo de promoción son obligatorios.");
-
-  if (tipo_promocion === "FIJA" && (!precio_promocion || precio_promocion <= 0))
-    throw new Error("Las promociones FIJAS requieren un precio válido.");
-
-  const [res] = await conn.query(
+// 🔹 LISTAR PROMOS FIJAS
+export async function listarPromosFijas() {
+  const [rows] = await pool.query(
     `
-      INSERT INTO promociones 
-      (nombre, descripcion, tipo_promocion, precio_promocion)
-      VALUES (?, ?, ?, ?)
-    `,
-    [nombre, descripcion || null, tipo_promocion, precio_promocion || null]
+    SELECT 
+      p.id,
+      p.nombre,
+      p.precio_promocion,
+      p.activa,
+      COUNT(d.id) AS total_productos
+    FROM promociones p
+    LEFT JOIN promociones_detalles d ON d.id_promocion = p.id
+    WHERE p.tipo_promocion = 'FIJA'
+    GROUP BY p.id
+    ORDER BY p.nombre ASC
+  `
   );
-
-  return res.insertId;
-};
-
-/* ============================================================
-   2) EDITAR PROMOCIÓN
-============================================================ */
-export const editarPromocion = async (
-  id,
-  { nombre, descripcion, tipo_promocion, precio_promocion },
-  conn
-) => {
-  if (!id) throw new Error("ID requerido.");
-
-  await conn.query(
-    `
-      UPDATE promociones
-      SET nombre = ?, descripcion = ?, tipo_promocion = ?, precio_promocion = ?
-      WHERE id = ?
-    `,
-    [nombre, descripcion, tipo_promocion, precio_promocion, id]
-  );
-
-  return true;
-};
-
-/* ============================================================
-   3) ACTIVAR / DESACTIVAR PROMOCIÓN
-============================================================ */
-export const setPromocionActiva = async (id, activa, conn) => {
-  if (!id) throw new Error("ID requerido.");
-
-  await conn.query(
-    `UPDATE promociones SET activa = ? WHERE id = ?`,
-    [activa, id]
-  );
-
-  return true;
-};
-
-/* ============================================================
-   4) LISTAR PROMOCIONES
-============================================================ */
-export const obtenerPromociones = async () => {
-  const [rows] = await pool.query(`
-    SELECT *
-    FROM promociones
-    ORDER BY id DESC
-  `);
-
   return rows;
-};
+}
 
-/* ============================================================
-   5) OBTENER PROMOCIÓN CON DETALLES Y REGLAS
-============================================================ */
-export const obtenerPromocionById = async (id) => {
-  if (!id) throw new Error("ID requerido.");
-
+// 🔹 OBTENER PROMO FIJA + DETALLE
+export async function obtenerPromoFija(id) {
   const [[promo]] = await pool.query(
-    `SELECT * FROM promociones WHERE id = ?`,
+    `
+    SELECT 
+      id,
+      nombre,
+      descripcion,
+      precio_promocion,
+      activa,
+      tipo_promocion
+    FROM promociones
+    WHERE id = ? AND tipo_promocion = 'FIJA'
+    LIMIT 1
+  `,
     [id]
   );
 
-  if (!promo) throw new Error("Promoción no encontrada.");
+  if (!promo) return null;
 
   const [detalle] = await pool.query(
     `
-      SELECT pd.*, p.nombre AS nombre_producto
-      FROM promociones_detalle pd
-      LEFT JOIN productos p ON p.id = pd.id_producto
-      WHERE id_promocion = ?
-    `,
+    SELECT
+      id,
+      id_producto,
+      cantidad,
+      es_gratis,
+      es_variable
+    FROM promociones_detalles
+    WHERE id_promocion = ?
+  `,
     [id]
   );
 
-  const [reglas] = await pool.query(
-    `
-      SELECT pr.*, c.nombre AS nombre_categoria, p.nombre AS nombre_producto
-      FROM promociones_reglas pr
-      LEFT JOIN categorias c ON pr.id_categoria = c.id
-      LEFT JOIN productos p ON pr.id_producto = p.id
-      WHERE id_promocion = ?
+  return { ...promo, detalle };
+}
+
+// 🔹 CREAR PROMO FIJA
+export async function crearPromoFija({ nombre, descripcion, precio_promocion, activa, detalle }) {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [result] = await conn.query(
+      `
+      INSERT INTO promociones (nombre, descripcion, tipo_promocion, precio_promocion, activa)
+      VALUES (?, ?, 'FIJA', ?, ?)
     `,
-    [id]
-  );
+      [nombre, descripcion ?? null, precio_promocion, activa ? 1 : 0]
+    );
 
-  return { promo, detalle, reglas };
-};
+    const idPromocion = result.insertId;
 
-/* ============================================================
-   6) AGREGAR PRODUCTO A PROMO FIJA
-============================================================ */
-export const agregarProductoPromo = async (
-  id_promocion,
-  { id_producto, cantidad, es_gratis, es_variable },
-  conn
-) => {
-  await conn.query(
-    `
-      INSERT INTO promociones_detalle
-      (id_promocion, id_producto, cantidad, es_gratis, es_variable)
-      VALUES (?, ?, ?, ?, ?)
+    const values = detalle.map((d) => [
+      idPromocion,
+      d.id_producto,
+      d.cantidad,
+      0, // es_gratis
+      0, // es_variable
+    ]);
+
+    await conn.query(
+      `
+      INSERT INTO promociones_detalles (id_promocion, id_producto, cantidad, es_gratis, es_variable)
+      VALUES ?
     `,
-    [id_promocion, id_producto, cantidad, es_gratis, es_variable]
-  );
+      [values]
+    );
 
-  return true;
-};
+    await conn.commit();
 
-/* ============================================================
-   7) BORRAR PRODUCTO DEL COMBO
-============================================================ */
-export const eliminarDetallePromo = async (id_detalle, conn) => {
-  await conn.query(
-    `DELETE FROM promociones_detalle WHERE id = ?`,
-    [id_detalle]
-  );
+    return idPromocion;
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
 
-  return true;
-};
+// 🔹 ACTUALIZAR PROMO FIJA
+export async function actualizarPromoFija(id, { nombre, descripcion, precio_promocion, activa, detalle }) {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
 
-/* ============================================================
-   8) AGREGAR REGLA A PROMO (dinámica)
-============================================================ */
-export const agregarReglaPromo = async (
-  id_promocion,
-  {
-    tipo_regla,
-    id_categoria,
-    id_producto,
-    cantidad_requerida,
-    min_capacidad_ml,
-    max_capacidad_ml,
-    es_gratis
-  },
-  conn
-) => {
-  await conn.query(
-    `
-      INSERT INTO promociones_reglas
-      (id_promocion, tipo_regla, id_categoria, id_producto, cantidad_requerida,
-       min_capacidad_ml, max_capacidad_ml, es_gratis)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    await conn.query(
+      `
+      UPDATE promociones
+      SET nombre = ?, descripcion = ?, precio_promocion = ?, activa = ?
+      WHERE id = ? AND tipo_promocion = 'FIJA'
     `,
-    [
-      id_promocion,
-      tipo_regla,
-      id_categoria || null,
-      id_producto || null,
-      cantidad_requerida,
-      min_capacidad_ml,
-      max_capacidad_ml,
-      es_gratis
-    ]
-  );
+      [nombre, descripcion ?? null, precio_promocion, activa ? 1 : 0, id]
+    );
 
-  return true;
-};
+    await conn.query("DELETE FROM promociones_detalles WHERE id_promocion = ?", [id]);
 
-/* ============================================================
-   9) ELIMINAR REGLA
-============================================================ */
-export const eliminarReglaPromo = async (id_regla, conn) => {
-  await conn.query(
-    `DELETE FROM promociones_reglas WHERE id = ?`,
-    [id_regla]
+    const values = detalle.map((d) => [
+      id,
+      d.id_producto,
+      d.cantidad,
+      0,
+      0,
+    ]);
+
+    await conn.query(
+      `
+      INSERT INTO promociones_detalles (id_promocion, id_producto, cantidad, es_gratis, es_variable)
+      VALUES ?
+    `,
+      [values]
+    );
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+// 🔹 CAMBIAR ESTADO
+export async function cambiarEstadoPromoFija(id, activa) {
+  await pool.query(
+    `
+    UPDATE promociones
+    SET activa = ?
+    WHERE id = ? AND tipo_promocion = 'FIJA'
+  `,
+    [activa ? 1 : 0, id]
   );
-  return true;
-};
+}

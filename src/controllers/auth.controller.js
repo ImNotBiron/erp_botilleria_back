@@ -29,7 +29,6 @@ export const login = async (req, res, next) => {
       return res.status(403).json({ error: "Usuario desactivado" });
     }
 
-    // Generar token (sin password)
     const token = generarToken({
       id: user.id,
       rut: user.rut,
@@ -37,19 +36,35 @@ export const login = async (req, res, next) => {
       tipo_usuario: user.tipo_usuario,
     });
 
-    res.json({
-  success: true,
-  token,
-  usuario: {
-    id: user.id,
-    nombre_usuario: user.nombre_usuario,
-    rut: user.rut,
-    tipo_usuario: user.tipo_usuario,
-    activo: user.activo,
-  },
-});
+    // 🔥 Actualizar en línea ANTES de responder
+    await pool.query("UPDATE usuarios SET en_linea = 1 WHERE id = ?", [user.id]);
+
+    // 🔥 Respuesta final (única)
+    return res.json({
+      success: true,
+      token,
+      usuario: {
+        id: user.id,
+        nombre_usuario: user.nombre_usuario,
+        rut: user.rut,
+        tipo_usuario: user.tipo_usuario,
+        activo: user.activo,
+      },
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
 
 
+export const logoutUsuario = async (req, res, next) => {
+  try {
+    const id = req.user.id;
+
+    await pool.query("UPDATE usuarios SET en_linea = 0 WHERE id = ?", [id]);
+
+    return res.json({ success: true });
   } catch (error) {
     next(error);
   }

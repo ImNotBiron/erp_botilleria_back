@@ -1,33 +1,14 @@
+// src/routes/promociones.routes.js
 import { Router } from "express";
-import { requireAuth } from "../middleware/authMiddleware.js";
-
-import {
-  crearPromocionController,
-  editarPromocionController,
-  obtenerPromocionesController,
-  obtenerPromocionByIdController,
-  setPromocionActivaController,
-  agregarProductoPromoController,
-  eliminarDetallePromoController,
-  agregarReglaPromoController,
-  eliminarReglaPromoController
-} from "../controllers/promociones.controller.js";
+import { requireAuth, requireAdmin } from "../middleware/auth.middleware.js";
+import * as promocionesController from "../controllers/promociones.controller.js";
 
 const router = Router();
 
-// CRUD principal
-router.get("/", requireAuth, obtenerPromocionesController);
-router.post("/", requireAuth, crearPromocionController);
-router.get("/:id", requireAuth, obtenerPromocionByIdController);
-router.put("/:id", requireAuth, editarPromocionController);
-router.put("/:id/activa", requireAuth, setPromocionActivaController);
-
-// Detalle del combo
-router.post("/:id_promocion/detalle", requireAuth, agregarProductoPromoController);
-router.delete("/detalle/:id_detalle", requireAuth, eliminarDetallePromoController);
-
-// Reglas dinámicas
-router.post("/:id_promocion/reglas", requireAuth, agregarReglaPromoController);
-router.delete("/reglas/:id_regla", requireAuth, eliminarReglaPromoController);
+router.get("/", requireAuth, requireAdmin, promocionesController.listarPromosFijas);
+router.get("/:id", requireAuth, requireAdmin, promocionesController.obtenerPromoFija);
+router.post("/", requireAuth, requireAdmin, promocionesController.crearPromoFija);
+router.put("/:id", requireAuth, requireAdmin, promocionesController.actualizarPromoFija);
+router.patch("/:id/estado", requireAuth, requireAdmin, promocionesController.cambiarEstadoPromoFija);
 
 export default router;

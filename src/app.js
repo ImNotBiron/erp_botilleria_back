@@ -8,6 +8,10 @@ config();
 import authRoutes from "./routes/auth.routes.js";
 import cajaRoutes from "./routes/caja.routes.js";
 import boletasRoutes from "./routes/boletas.routes.js";
+import usuariosRoutes from "./routes/usuarios.routes.js";
+import productosRoutes from "./routes/productos.routes.js";
+import categoriasRoutes from "./routes/categorias.routes.js";
+import proveedoresRoutes from "./routes/proveedores.routes.js";
 
 const app = express();
 
@@ -27,6 +31,11 @@ app.use(express.urlencoded({ extended: true }));
 app.use("/api/auth", authRoutes);
 app.use("/api/caja", cajaRoutes);
 app.use("/api/boletas", boletasRoutes);
+app.use("/api/usuarios", usuariosRoutes);
+app.use("/api/productos", productosRoutes);
+app.use("/api/categorias", categoriasRoutes);
+app.use("/api/proveedores", proveedoresRoutes);
+
 
 // Healthcheck básico
 app.get("/api/health", (req, res) => {

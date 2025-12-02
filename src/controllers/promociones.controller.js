@@ -1,163 +1,82 @@
-import pool from "../config/db.js";
-import {
-  crearPromocion,
-  editarPromocion,
-  setPromocionActiva,
-  obtenerPromociones,
-  obtenerPromocionById,
-  agregarProductoPromo,
-  eliminarDetallePromo,
-  agregarReglaPromo,
-  eliminarReglaPromo
-} from "../services/promociones.service.js";
+// src/controllers/promociones.controller.js
+import * as promocionesService from "../services/promociones.service.js";
 
-export const crearPromocionController = async (req, res) => {
-  const conn = await pool.getConnection();
-
+export async function listarPromosFijas(req, res, next) {
   try {
-    await conn.beginTransaction();
-    const id = await crearPromocion(req.body, conn);
-    await conn.commit();
+    const promos = await promocionesService.listarPromosFijas();
+    res.json(promos);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function obtenerPromoFija(req, res, next) {
+  try {
+    const id = req.params.id;
+    const promo = await promocionesService.obtenerPromoFija(id);
+
+    if (!promo) return res.status(404).json({ error: "Promoción no encontrada" });
+
+    res.json(promo);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function crearPromoFija(req, res, next) {
+  try {
+    const { nombre, descripcion, precio_promocion, activa, detalle } = req.body;
+
+    if (!nombre || !precio_promocion || !detalle?.length) {
+      return res.status(400).json({ error: "Datos incompletos" });
+    }
+
+    const id = await promocionesService.crearPromoFija({
+      nombre,
+      descripcion,
+      precio_promocion,
+      activa,
+      detalle,
+    });
 
     res.json({ success: true, id });
-
   } catch (err) {
-    await conn.rollback();
-    res.status(400).json({ error: err.message });
-  } finally {
-    conn.release();
+    next(err);
   }
-};
+}
 
-export const editarPromocionController = async (req, res) => {
-  const conn = await pool.getConnection();
-  const { id } = req.params;
-
+export async function actualizarPromoFija(req, res, next) {
   try {
-    await conn.beginTransaction();
-    await editarPromocion(id, req.body, conn);
-    await conn.commit();
+    const id = req.params.id;
+    const { nombre, descripcion, precio_promocion, activa, detalle } = req.body;
+
+    if (!nombre || !precio_promocion || !detalle?.length) {
+      return res.status(400).json({ error: "Datos incompletos" });
+    }
+
+    await promocionesService.actualizarPromoFija(id, {
+      nombre,
+      descripcion,
+      precio_promocion,
+      activa,
+      detalle,
+    });
 
     res.json({ success: true });
-
   } catch (err) {
-    await conn.rollback();
-    res.status(400).json({ error: err.message });
-  } finally {
-    conn.release();
+    next(err);
   }
-};
+}
 
-export const obtenerPromocionesController = async (req, res) => {
+export async function cambiarEstadoPromoFija(req, res, next) {
   try {
-    const data = await obtenerPromociones();
-    res.json({ success: true, promociones: data });
+    const id = req.params.id;
+    const { activa } = req.body;
 
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-};
-
-export const obtenerPromocionByIdController = async (req, res) => {
-  try {
-    const data = await obtenerPromocionById(req.params.id);
-    res.json({ success: true, ...data });
-
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-};
-
-export const setPromocionActivaController = async (req, res) => {
-  const conn = await pool.getConnection();
-
-  try {
-    await conn.beginTransaction();
-    await setPromocionActiva(req.params.id, req.body.activa, conn);
-    await conn.commit();
+    await promocionesService.cambiarEstadoPromoFija(id, activa);
 
     res.json({ success: true });
-
   } catch (err) {
-    await conn.rollback();
-    res.status(400).json({ error: err.message });
-  } finally {
-    conn.release();
+    next(err);
   }
-};
-
-export const agregarProductoPromoController = async (req, res) => {
-  const conn = await pool.getConnection();
-  const { id_promocion } = req.params;
-
-  try {
-    await conn.beginTransaction();
-    await agregarProductoPromo(id_promocion, req.body, conn);
-    await conn.commit();
-
-    res.json({ success: true });
-
-  } catch (err) {
-    await conn.rollback();
-    res.status(400).json({ error: err.message });
-  } finally {
-    conn.release();
-  }
-};
-
-export const eliminarDetallePromoController = async (req, res) => {
-  const { id_detalle } = req.params;
-  const conn = await pool.getConnection();
-
-  try {
-    await conn.beginTransaction();
-    await eliminarDetallePromo(id_detalle, conn);
-    await conn.commit();
-
-    res.json({ success: true });
-
-  } catch (err) {
-    await conn.rollback();
-    res.status(400).json({ error: err.message });
-  } finally {
-    conn.release();
-  }
-};
-
-export const agregarReglaPromoController = async (req, res) => {
-  const conn = await pool.getConnection();
-  const { id_promocion } = req.params;
-
-  try {
-    await conn.begin.beginTransaction();
-    await agregarReglaPromo(id_promocion, req.body, conn);
-    await conn.commit();
-
-    res.json({ success: true });
-
-  } catch (err) {
-    await conn.rollback();
-    res.status(400).json({ error: err.message });
-  } finally {
-    conn.release();
-  }
-};
-
-export const eliminarReglaPromoController = async (req, res) => {
-  const { id_regla } = req.params;
-  const conn = await pool.getConnection();
-
-  try {
-    await conn.beginTransaction();
-    await eliminarReglaPromo(id_regla, conn);
-    await conn.commit();
-
-    res.json({ success: true });
-
-  } catch (err) {
-    await conn.rollback();
-    res.status(400).json({ error: err.message });
-  } finally {
-    conn.release();
-  }
-};
+}
