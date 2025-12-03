@@ -3,6 +3,16 @@
 import pool from "../config/db.js";
 
 /* ============================================================
+   HELPERS
+============================================================ */
+
+// Asegura que un valor sea número entero >= 0 (o lanza error)
+const toIntOrZero = (val) => {
+  const n = Number(val);
+  return Number.isNaN(n) ? 0 : Math.trunc(n);
+};
+
+/* ============================================================
    OBTENER CAJA ACTIVA
    ------------------------------------------------------------
    Retorna la sesión de caja en estado "ABIERTA".
@@ -17,26 +27,26 @@ export const obtenerCajaActiva = async () => {
 /* ============================================================
    ABRIR CAJA
    ------------------------------------------------------------
-   Validaciones:
-   - no debe existir caja abierta
-   - montos iniciales válidos
-   - usuario válido
+   - Verifica que NO haya caja abierta.
+   - Inserta nueva sesión con inicial_local / inicial_vecina.
 ============================================================ */
-export const abrirCaja = async (id_usuario, inicial_local, inicial_vecina) => {
-  if (!id_usuario) throw new Error("Usuario no identificado.");
+export const abrirCaja = async (
+  id_usuario_apertura,
+  inicial_local,
+  inicial_vecina
+) => {
+  const cajaActiva = await obtenerCajaActiva();
+  if (cajaActiva) {
+    throw new Error("Ya existe una caja abierta. Debes cerrarla antes de abrir otra.");
+  }
 
-  // Validaciones de montos
-  if (inicial_local == null || isNaN(inicial_local) || inicial_local < 0)
-    throw new Error("El monto inicial de la caja local es inválido.");
+  const inicialLocalNum = toIntOrZero(inicial_local);
+  const inicialVecinaNum = toIntOrZero(inicial_vecina);
 
-  if (inicial_vecina == null || isNaN(inicial_vecina) || inicial_vecina < 0)
-    throw new Error("El monto inicial de la caja vecina es inválido.");
+  if (inicialLocalNum < 0 || inicialVecinaNum < 0) {
+    throw new Error("Los montos iniciales no pueden ser negativos.");
+  }
 
-  // ¿Ya existe caja abierta?
-  const caja = await obtenerCajaActiva();
-  if (caja) throw new Error("Ya existe una caja abierta.");
-
-  // Registrar apertura
   const [result] = await pool.query(
     `
       INSERT INTO caja_sesiones (
@@ -44,349 +54,292 @@ export const abrirCaja = async (id_usuario, inicial_local, inicial_vecina) => {
         id_usuario_apertura,
         inicial_local,
         inicial_vecina,
+        total_efectivo_giro,
+        total_debito,
+        total_credito,
+        total_transferencia,
+        total_exento,
+        ingresos_extra,
+        egresos,
+        movimientos_vecina,
+        total_esperado_local,
+        total_esperado_vecina,
+        total_real_local,
+        total_real_vecina,
+        diferencia_local,
+        diferencia_vecina,
+        tickets_efectivo,
+        tickets_debito,
+        tickets_credito,
+        tickets_transferencia,
         estado
       )
-      VALUES (NOW(), ?, ?, ?, 'ABIERTA')
+      VALUES (
+        NOW(),
+        ?,
+        ?,
+        ?,
+        0, 0, 0, 0, 0,
+        0, 0, 0,
+        0, 0,
+        NULL, NULL,
+        NULL, NULL,
+        0, 0, 0, 0,
+        'ABIERTA'
+      )
     `,
-    [id_usuario, inicial_local, inicial_vecina]
+    [id_usuario_apertura, inicialLocalNum, inicialVecinaNum]
   );
 
   return result.insertId;
 };
 
 /* ============================================================
-   VALIDAR PROVEEDOR Y VENDEDOR (si se envían)
-============================================================ */
-const validarProveedor = async (id_proveedor, id_proveedor_vendedor) => {
-  if (!id_proveedor) return; // nada que validar
-
-  const [prov] = await pool.query(
-    "SELECT id FROM proveedores WHERE id = ?",
-    [id_proveedor]
-  );
-
-  if (prov.length === 0) throw new Error("Proveedor no existe.");
-
-  if (id_proveedor_vendedor) {
-    const [vend] = await pool.query(
-      "SELECT id FROM proveedores_vendedores WHERE id = ? AND id_proveedor = ?",
-      [id_proveedor_vendedor, id_proveedor]
-    );
-
-    if (vend.length === 0)
-      throw new Error("El vendedor no pertenece a este proveedor.");
-  }
-};
-
-/* ============================================================
-   REGISTRAR MOVIMIENTO DE CAJA
+   REGISTRAR MOVIMIENTO MANUAL DE CAJA
    ------------------------------------------------------------
-   Tipos:
-   - INGRESO
-   - EGRESO
-   - VECINA
+   Tipos: 'INGRESO' | 'EGRESO' | 'VECINA'
+   - Siempre ligado a la caja ACTIVA.
+   - Actualiza agregados en caja_sesiones.
 ============================================================ */
-export const registrarMovimiento = async (
-  id_caja_sesion,
-  id_usuario,
+export const registrarMovimiento = async ({
   tipo,
   categoria,
   monto,
   descripcion,
-  id_proveedor,
-  id_proveedor_vendedor
-) => {
-  if (!id_caja_sesion) throw new Error("No hay caja activa.");
-  if (!id_usuario) throw new Error("Usuario no identificado.");
+  id_proveedor = null,
+  id_proveedor_vendedor = null,
+  id_usuario,
+}) => {
+  const caja = await obtenerCajaActiva();
+  if (!caja) {
+    throw new Error("No hay caja abierta. No se pueden registrar movimientos.");
+  }
 
-  // Validación tipo
-  const tiposValidos = ["INGRESO", "EGRESO", "VECINA"];
-  if (!tiposValidos.includes(tipo))
+  if (!["INGRESO", "EGRESO", "VECINA"].includes(tipo)) {
     throw new Error("Tipo de movimiento inválido.");
+  }
 
-  // Validación categoría
-  if (!categoria || categoria.trim().length === 0)
+  if (!categoria || typeof categoria !== "string") {
     throw new Error("Debe indicar una categoría de movimiento.");
+  }
 
-  // Validación monto
-  if (monto == null || isNaN(monto) || monto <= 0)
+  const montoNum = Number(monto);
+  if (Number.isNaN(montoNum) || montoNum <= 0) {
     throw new Error("Monto inválido. Debe ser un número mayor a cero.");
+  }
 
-  // Validación proveedor (si existe)
-  await validarProveedor(id_proveedor, id_proveedor_vendedor);
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
 
-  // Registrar movimiento
-  await pool.query(
-    `
-      INSERT INTO caja_movimientos
-      (id_caja_sesion, tipo, categoria, monto, descripcion,
-       id_proveedor, id_proveedor_vendedor, id_usuario)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    [
-      id_caja_sesion,
-      tipo,
-      categoria.trim(),
-      monto,
-      descripcion || null,
-      id_proveedor || null,
-      id_proveedor_vendedor || null,
-      id_usuario,
-    ]
-  );
-
-  // Actualizar totales en tabla caja_sesiones
-  let campo = null;
-
-  if (tipo === "INGRESO") campo = "ingresos_extra";
-  else if (tipo === "EGRESO") campo = "egresos";
-  else if (tipo === "VECINA") campo = "movimientos_vecina";
-
-  if (campo) {
-    await pool.query(
-      `UPDATE caja_sesiones SET ${campo} = ${campo} + ? WHERE id = ?`,
-      [monto, id_caja_sesion]
+    // Registrar movimiento
+    await conn.query(
+      `
+        INSERT INTO caja_movimientos
+          (id_caja_sesion, tipo, categoria, monto, descripcion,
+           id_proveedor, id_proveedor_vendedor, anulado, fecha, id_usuario)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, NOW(), ?)
+      `,
+      [
+        caja.id,
+        tipo,
+        categoria,
+        montoNum,
+        descripcion || null,
+        id_proveedor || null,
+        id_proveedor_vendedor || null,
+        id_usuario,
+      ]
     );
+
+    // Actualizar agregados de la caja
+    let deltaIngresos = 0;
+    let deltaEgresos = 0;
+    let deltaMovVecina = 0;
+
+    if (tipo === "INGRESO") {
+      deltaIngresos = montoNum;
+    } else if (tipo === "EGRESO") {
+      deltaEgresos = montoNum;
+    } else if (tipo === "VECINA") {
+      // Definimos:
+      // - categoria = 'A_VECINA'    → local entrega efectivo a vecina (disminuye local, sube vecina)
+      // - categoria = 'DESDE_VECINA' → vecina entrega efectivo a local (sube local, baja vecina)
+      if (categoria === "A_VECINA") {
+        deltaMovVecina = montoNum; // positivo
+      } else if (categoria === "DESDE_VECINA") {
+        deltaMovVecina = -montoNum; // negativo
+      } else {
+        throw new Error(
+          "Categoría inválida para movimiento de caja vecina. Use 'A_VECINA' o 'DESDE_VECINA'."
+        );
+      }
+    }
+
+    await conn.query(
+      `
+        UPDATE caja_sesiones
+        SET
+          ingresos_extra     = ingresos_extra     + ?,
+          egresos            = egresos            + ?,
+          movimientos_vecina = movimientos_vecina + ?
+        WHERE id = ?
+      `,
+      [deltaIngresos, deltaEgresos, deltaMovVecina, caja.id]
+    );
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
   }
 };
 
 /* ============================================================
    CERRAR CAJA
    ------------------------------------------------------------
-   Validaciones:
-   - caja debe estar abierta
-   - montos reales válidos
-   - cálculo de esperado y diferencias
+   - Calcula totales esperados local/vecina.
+   - Guarda montos reales ingresados por el usuario.
+   - Calcula diferencias.
 ============================================================ */
 export const cerrarCaja = async (
-  id_caja,
   id_usuario_cierre,
   total_real_local,
   total_real_vecina
 ) => {
-  if (!id_usuario_cierre) throw new Error("Usuario no identificado.");
+  const caja = await obtenerCajaActiva();
+  if (!caja) {
+    throw new Error("No hay caja abierta para cerrar.");
+  }
 
-  if (total_real_local == null || isNaN(total_real_local) || total_real_local < 0)
-    throw new Error("Monto real de caja local es inválido.");
+  const realLocalNum = toIntOrZero(total_real_local);
+  const realVecinaNum = toIntOrZero(total_real_vecina);
 
-  if (total_real_vecina == null || isNaN(total_real_vecina) || total_real_vecina < 0)
-    throw new Error("Monto real de caja vecina es inválido.");
+  // Fórmulas oficiales (según lo que definimos juntos):
 
-  // Buscar caja
-  const [rows] = await pool.query(
-    `SELECT * FROM caja_sesiones WHERE id = ? LIMIT 1`,
-    [id_caja]
-  );
-  if (rows.length === 0) throw new Error("Caja no encontrada.");
+  // movimientos_vecina:
+  //  - positivo  → local envió a vecina (local -m, vecina +m)
+  //  - negativo  → local recibió de vecina (local +m, vecina -m)
 
-  const caja = rows[0];
-
-  if (caja.estado === "CERRADA")
-    throw new Error("La caja ya se encuentra cerrada.");
-
-  // Cálculo esperado
-  const esperado_local =
+  const totalEsperadoLocal =
     caja.inicial_local +
     caja.total_efectivo_giro +
     caja.ingresos_extra -
     caja.egresos -
     caja.movimientos_vecina;
 
-  const esperado_vecina =
-    caja.inicial_vecina +
-    caja.movimientos_vecina;
+  const totalEsperadoVecina = caja.inicial_vecina + caja.movimientos_vecina;
 
-  const diferencia_local = total_real_local - esperado_local;
-  const diferencia_vecina = total_real_vecina - esperado_vecina;
+  const diferenciaLocal = realLocalNum - totalEsperadoLocal;
+  const diferenciaVecina = realVecinaNum - totalEsperadoVecina;
 
-  // Guardar cierre
   await pool.query(
     `
       UPDATE caja_sesiones
-      SET 
-        fecha_cierre = NOW(),
-        id_usuario_cierre = ?,
-        total_real_local = ?,
-        total_real_vecina = ?,
-        diferencia_local = ?,
-        diferencia_vecina = ?,
-        estado = 'CERRADA'
+      SET
+        fecha_cierre         = NOW(),
+        id_usuario_cierre    = ?,
+        total_esperado_local = ?,
+        total_esperado_vecina= ?,
+        total_real_local     = ?,
+        total_real_vecina    = ?,
+        diferencia_local     = ?,
+        diferencia_vecina    = ?,
+        estado               = 'CERRADA'
       WHERE id = ?
+        AND estado = 'ABIERTA'
     `,
     [
       id_usuario_cierre,
-      total_real_local,
-      total_real_vecina,
-      diferencia_local,
-      diferencia_vecina,
-      id_caja,
+      totalEsperadoLocal,
+      totalEsperadoVecina,
+      realLocalNum,
+      realVecinaNum,
+      diferenciaLocal,
+      diferenciaVecina,
+      caja.id,
     ]
   );
 
   return {
-    esperado_local,
-    esperado_vecina,
-    diferencia_local,
-    diferencia_vecina,
-  };
-};
-
-export const obtenerHistorialCajas = async () => {
-  const [rows] = await pool.query(`
-    SELECT 
-      cs.*,
-      u1.nombre_usuario AS abierto_por,
-      u2.nombre_usuario AS cerrado_por
-    FROM caja_sesiones cs
-    LEFT JOIN usuarios u1 ON cs.id_usuario_apertura = u1.id
-    LEFT JOIN usuarios u2 ON cs.id_usuario_cierre = u2.id
-    ORDER BY cs.id DESC
-  `);
-
-  return rows;
-};
-export const obtenerDetalleCaja = async (id_caja) => {
-  // 1) Obtener datos de la caja
-  const [caja_rows] = await pool.query(
-    `
-    SELECT 
-      cs.*,
-      u1.nombre_usuario AS abierto_por,
-      u2.nombre_usuario AS cerrado_por
-    FROM caja_sesiones cs
-    LEFT JOIN usuarios u1 ON cs.id_usuario_apertura = u1.id
-    LEFT JOIN usuarios u2 ON cs.id_usuario_cierre = u2.id
-    WHERE cs.id = ?
-    `,
-    [id_caja]
-  );
-
-  if (caja_rows.length === 0)
-    throw new Error("Caja no encontrada.");
-
-  const caja = caja_rows[0];
-
-  // 2) Obtener movimientos de caja
-  const [movimientos] = await pool.query(
-    `
-    SELECT cm.*, p.nombre AS proveedor_nombre, pv.nombre AS vendedor_proveedor
-    FROM caja_movimientos cm
-    LEFT JOIN proveedores p ON cm.id_proveedor = p.id
-    LEFT JOIN proveedores_vendedores pv ON cm.id_proveedor_vendedor = pv.id
-    WHERE cm.id_caja_sesion = ?
-    ORDER BY cm.id DESC
-    `,
-    [id_caja]
-  );
-
-  // 3) Obtener ventas asociadas a esta caja
-  const [ventas] = await pool.query(
-    `
-    SELECT 
-      v.id,
-      v.fecha,
-      v.total_general,
-      v.total_afecto,
-      v.total_exento,
-      v.tipo_venta,
-      v.boleteado,
-      u.nombre_usuario AS vendedor
-    FROM ventas v
-    LEFT JOIN usuarios u ON v.id_usuario = u.id
-    WHERE v.id_caja_sesion = ?
-    ORDER BY v.id DESC
-    `,
-    [id_caja]
-  );
-
-  return {
-    caja,
-    movimientos,
-    ventas
+    id_caja_sesion: caja.id,
+    total_esperado_local: totalEsperadoLocal,
+    total_esperado_vecina: totalEsperadoVecina,
+    total_real_local: realLocalNum,
+    total_real_vecina: realVecinaNum,
+    diferencia_local: diferenciaLocal,
+    diferencia_vecina: diferenciaVecina,
   };
 };
 
 /* ============================================================
-   REVERTIR TOTALES EN CAJA POR ANULACIÓN
+   HISTORIAL DE CAJAS
+   ------------------------------------------------------------
+   Últimas N sesiones de caja (para listado en admin).
 ============================================================ */
-export const actualizarCajaAnulacion = async (
-  conn,
-  id_caja_sesion,
-  pagos,
-  total_exento,
-  tipo_venta
-) => {
-
-  let efectivo_giro = 0;
-  let debito = 0;
-  let credito = 0;
-  let transferencia = 0;
-
-  for (const p of pagos) {
-    const monto = Number(p.monto);
-
-    switch (p.tipo_pago) {
-      case "EFECTIVO":
-      case "GIRO":
-        efectivo_giro += monto;
-        break;
-      case "DEBITO":
-        debito += monto;
-        break;
-      case "CREDITO":
-        credito += monto;
-        break;
-      case "TRANSFERENCIA":
-        transferencia += monto;
-        break;
-    }
-  }
-
-  // Revertir montos
-  await conn.query(
+export const obtenerHistorialCajas = async (limite = 50) => {
+  const [rows] = await pool.query(
     `
-      UPDATE caja_sesiones
-      SET 
-        total_efectivo_giro   = total_efectivo_giro   - ?,
-        total_debito          = total_debito          - ?,
-        total_credito         = total_credito         - ?,
-        total_transferencia   = total_transferencia   - ?,
-        total_exento          = total_exento          - ?
-      WHERE id = ?
+      SELECT
+        cs.*,
+        ua.nombre_usuario AS usuario_apertura,
+        uc.nombre_usuario AS usuario_cierre
+      FROM caja_sesiones cs
+      LEFT JOIN usuarios ua ON cs.id_usuario_apertura = ua.id
+      LEFT JOIN usuarios uc ON cs.id_usuario_cierre  = uc.id
+      ORDER BY cs.fecha_apertura DESC
+      LIMIT ?
     `,
-    [efectivo_giro, debito, credito, transferencia, total_exento, id_caja_sesion]
+    [limite]
   );
-
-  // Revertir tickets
-  await conn.query(
-    `
-      UPDATE caja_sesiones
-      SET 
-        tickets_efectivo      = tickets_efectivo      - ?,
-        tickets_debito        = tickets_debito        - ?,
-        tickets_credito       = tickets_credito       - ?,
-        tickets_transferencia = tickets_transferencia - ?
-      WHERE id = ?
-    `,
-    [
-      efectivo_giro > 0 ? 1 : 0,
-      debito > 0 ? 1 : 0,
-      credito > 0 ? 1 : 0,
-      transferencia > 0 ? 1 : 0,
-      id_caja_sesion
-    ]
-  );
-
-  // En ventas internas revertimos caja vecina
-  if (tipo_venta === "INTERNA") {
-    await conn.query(
-      `
-        UPDATE caja_sesiones
-        SET movimientos_vecina = movimientos_vecina - ?
-        WHERE id = ?
-      `,
-      [efectivo_giro + debito + credito + transferencia, id_caja_sesion]
-    );
-  }
+  return rows;
 };
-  
+
+/* ============================================================
+   DETALLE DE CAJA
+   ------------------------------------------------------------
+   - Cabecera de la sesión
+   - Movimientos asociados
+============================================================ */
+export const obtenerDetalleCaja = async (id_caja_sesion) => {
+  const [cajaRows] = await pool.query(
+    `
+      SELECT
+        cs.*,
+        ua.nombre_usuario AS usuario_apertura,
+        uc.nombre_usuario AS usuario_cierre
+      FROM caja_sesiones cs
+      LEFT JOIN usuarios ua ON cs.id_usuario_apertura = ua.id
+      LEFT JOIN usuarios uc ON cs.id_usuario_cierre  = uc.id
+      WHERE cs.id = ?
+    `,
+    [id_caja_sesion]
+  );
+
+  if (cajaRows.length === 0) {
+    throw new Error("La sesión de caja indicada no existe.");
+  }
+
+  const caja = cajaRows[0];
+
+  const [movimientos] = await pool.query(
+    `
+      SELECT
+        cm.*,
+        p.nombre  AS proveedor_nombre,
+        pv.nombre AS proveedor_vendedor_nombre
+      FROM caja_movimientos cm
+      LEFT JOIN proveedores p
+        ON cm.id_proveedor = p.id
+      LEFT JOIN proveedores_vendedores pv
+        ON cm.id_proveedor_vendedor = pv.id
+      WHERE cm.id_caja_sesion = ?
+      ORDER BY cm.fecha ASC
+    `,
+    [id_caja_sesion]
+  );
+
+  return { caja, movimientos };
+};

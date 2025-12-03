@@ -1,89 +1,126 @@
 // src/controllers/caja.controller.js
+
 import {
   obtenerCajaActiva,
   abrirCaja,
   registrarMovimiento,
   cerrarCaja,
+  obtenerHistorialCajas,
+  obtenerDetalleCaja,
 } from "../services/caja.service.js";
-import { obtenerHistorialCajas,obtenerDetalleCaja } from "../services/caja.service.js";
 
-export const abrirCajaController = async (req, res, next) => {
+/* ============================================================
+   ABRIR CAJA
+============================================================ */
+export const abrirCajaController = async (req, res) => {
   try {
     const { inicial_local, inicial_vecina } = req.body;
-    const id_usuario = req.user.id;
+    const id_usuario = req.user.id; // viene del middleware requireAuth
 
     const id_sesion = await abrirCaja(id_usuario, inicial_local, inicial_vecina);
 
-    res.json({ success: true, id_sesion });
+    res.json({
+      success: true,
+      id_sesion,
+      message: "Caja abierta correctamente.",
+    });
   } catch (err) {
-    next(err);
+    res.status(400).json({ error: err.message });
   }
 };
 
-export const estadoCajaController = async (req, res, next) => {
+/* ============================================================
+   ESTADO DE CAJA (para admin o POS)
+============================================================ */
+export const estadoCajaController = async (req, res) => {
   try {
     const caja = await obtenerCajaActiva();
-    res.json({ success: true, caja });
+    res.json({
+      success: true,
+      caja_activa: !!caja,
+      caja,
+    });
   } catch (err) {
-    next(err);
+    res.status(400).json({ error: err.message });
   }
 };
 
-export const movimientoCajaController = async (req, res, next) => {
+/* ============================================================
+   REGISTRAR MOVIMIENTO MANUAL
+============================================================ */
+export const movimientoCajaController = async (req, res) => {
   try {
-    const caja = await obtenerCajaActiva();
-    if (!caja) throw new Error("No hay caja abierta.");
-
-    const { tipo, categoria, monto, descripcion, id_proveedor, id_proveedor_vendedor } =
-      req.body;
-
-    await registrarMovimiento(
-      caja.id,
-      req.user.id,
+    const {
       tipo,
       categoria,
       monto,
       descripcion,
       id_proveedor,
-      id_proveedor_vendedor
-    );
+      id_proveedor_vendedor,
+    } = req.body;
 
-    res.json({ success: true });
+    const id_usuario = req.user.id;
+
+    await registrarMovimiento({
+      tipo,
+      categoria,
+      monto,
+      descripcion,
+      id_proveedor,
+      id_proveedor_vendedor,
+      id_usuario,
+    });
+
+    res.json({
+      success: true,
+      message: "Movimiento registrado correctamente.",
+    });
   } catch (err) {
-    next(err);
+    res.status(400).json({ error: err.message });
   }
 };
 
-export const cerrarCajaController = async (req, res, next) => {
+/* ============================================================
+   CERRAR CAJA
+============================================================ */
+export const cerrarCajaController = async (req, res) => {
   try {
-    const caja = await obtenerCajaActiva();
-    if (!caja) throw new Error("No hay caja abierta.");
-
     const { total_real_local, total_real_vecina } = req.body;
+    const id_usuario = req.user.id;
 
-    const result = await cerrarCaja(
-      caja.id,
-      req.user.id,
+    const resultado = await cerrarCaja(
+      id_usuario,
       total_real_local,
       total_real_vecina
     );
 
-    res.json({ success: true, ...result });
+    res.json({
+      success: true,
+      message: "Caja cerrada correctamente.",
+      ...resultado,
+    });
   } catch (err) {
-    next(err);
+    res.status(400).json({ error: err.message });
   }
 };
 
-export const historialCajaController = async (req, res, next) => {
+/* ============================================================
+   HISTORIAL DE CAJAS
+============================================================ */
+export const historialCajaController = async (req, res) => {
   try {
-    const historial = await obtenerHistorialCajas();
+    // más adelante podríamos recibir ?limite=...
+    const historial = await obtenerHistorialCajas(50);
     res.json({ success: true, historial });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 };
 
-export const detalleCajaController = async (req, res, next) => {
+/* ============================================================
+   DETALLE DE UNA SESIÓN DE CAJA
+============================================================ */
+export const detalleCajaController = async (req, res) => {
   try {
     const { id } = req.params;
     const detalle = await obtenerDetalleCaja(id);
@@ -92,4 +129,3 @@ export const detalleCajaController = async (req, res, next) => {
     res.status(400).json({ error: err.message });
   }
 };
-
