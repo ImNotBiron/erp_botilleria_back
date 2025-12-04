@@ -287,3 +287,33 @@ export const borrarProducto = async (req, res, next) => {
     next(error);
   }
 };
+
+export const obtenerProductoPorCodigo = async (req, res, next) => {
+  try {
+    const { codigo } = req.params;
+
+    const [rows] = await pool.query(
+      `
+      SELECT 
+        p.*,
+        c.nombre AS categoria,
+        pr.nombre AS proveedor
+      FROM productos p
+      LEFT JOIN categorias c ON p.id_categoria = c.id
+      LEFT JOIN proveedores pr ON p.id_proveedor = pr.id
+      WHERE p.codigo_producto = ?
+        AND p.activo = 1
+      LIMIT 1
+      `,
+      [codigo]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Producto no encontrado" });
+    }
+
+    res.json(rows[0]);
+  } catch (error) {
+    next(error);
+  }
+};
