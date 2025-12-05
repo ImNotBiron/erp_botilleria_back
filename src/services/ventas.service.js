@@ -9,7 +9,7 @@ import { registrarMovimientoStock } from "./stock.service.js";
    ------------------------------------------------------------
    Devuelve la suma de los montos por tipo de pago.
 ============================================================ */
-const clasificarPagos = (pagos) => {
+export const clasificarPagos = (pagos) => {
   let efectivo_giro = 0;
   let debito = 0;
   let credito = 0;
@@ -211,7 +211,7 @@ export const crearVenta = async (req, conn) => {
       it.nombre_producto,
       it.cantidad,
       it.precio_unitario,
-      it.precio_unitario,
+      it.precio_unitario * it.cantidad,
       it.exento_iva,
     ]
   );
@@ -257,7 +257,7 @@ export const crearVenta = async (req, conn) => {
 };
 
 // ID del producto "Hielo 1kg" 
-const HIELO_1KG_ID = HIELO01;
+const HIELO_1KG_ID = 5;
 
 // POS: crear venta desde carrito (productos + combos licores)
 export const crearVentaPos = async (req, conn) => {
@@ -381,11 +381,11 @@ export const crearVentaPos = async (req, conn) => {
       [
         id_venta,
         it.id_producto,
-        it.nombre_producto,
+        it.nombre_producto,                   // ✅ viene del validador
         it.cantidad,
-        it.precio_unitario,
-        it.precio_unitario,
-        it.exento_iva,
+        it.precio_unitario,                   // ✅ viene del validador
+        it.precio_unitario * it.cantidad,     // ✅ total por línea
+        it.exento_iva,                        // ✅ viene del validador
       ]
     );
 
@@ -400,6 +400,58 @@ export const crearVentaPos = async (req, conn) => {
     });
   }
 
+  // ...
+
+  if (cantidadHielos > 0) {
+    // Traer datos reales del producto hielo
+    const [rowsHielo] = await conn.query(
+      `
+        SELECT nombre_producto, exento_iva
+        FROM productos
+        WHERE id = ?
+      `,
+      [HIELO_1KG_ID]
+    );
+
+    if (rowsHielo.length === 0) {
+      throw new Error("Producto Hielo 1kg no encontrado en la base de datos.");
+    }
+
+    const prodHielo = rowsHielo[0];
+
+    // Insertar UNA línea por cada combo (si quieres agrupar, se podría sumar cantidad)
+    for (let i = 0; i < cantidadHielos; i++) {
+      await conn.query(
+        `
+          INSERT INTO ventas_detalle
+          (id_venta, id_producto, nombre_producto, cantidad,
+           precio_unitario, precio_final, exento_iva)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          id_venta,
+          HIELO_1KG_ID,
+          prodHielo.nombre_producto,   // ✅ campo correcto
+          1,
+          0,                           // se regala
+          0,
+          prodHielo.exento_iva,
+        ]
+      );
+
+      await registrarMovimientoStock({
+        conn,
+        id_producto: HIELO_1KG_ID,
+        id_usuario,
+        id_caja_sesion,
+        tipo_movimiento: "VENTA",
+        cantidad: -1,
+        descripcion: `Hielo bonificado en combo licores. Venta POS N° ${id_venta}`,
+      });
+    }
+  }
+
+
   // 8) Agregar detalle y movimiento de stock para cada hielo de combo (gratis)
   const combos = items.filter((it) => it.tipo === "COMBO_LICORES");
   const cantidadHielos = combos.length;
@@ -408,7 +460,7 @@ export const crearVentaPos = async (req, conn) => {
     // Traer datos reales del producto hielo
     const [rowsHielo] = await conn.query(
       `
-        SELECT nombre, exento_iva
+        SELECT nombre_producto, exento_iva
         FROM productos
         WHERE id = ?
       `,

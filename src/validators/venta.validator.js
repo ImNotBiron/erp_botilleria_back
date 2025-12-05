@@ -9,6 +9,7 @@
    - Calcula total_general y total_exento
 ============================================================ */
 
+// src/validators/venta.validator.js
 export const validarProductos = async (items, conn) => {
   if (!items || items.length === 0)
     throw new Error("La venta no contiene productos.");
@@ -27,7 +28,7 @@ export const validarProductos = async (items, conn) => {
     const [prodRows] = await conn.query(
       `
       SELECT 
-        nombre,
+        nombre_producto,
         precio_venta,
         precio_mayorista,
         cantidad_mayorista,
@@ -51,19 +52,16 @@ export const validarProductos = async (items, conn) => {
     const tieneMayorista =
       prod.precio_mayorista != null &&
       prod.precio_mayorista > 0 &&
-      prod.mayorista_cantidad_min != null &&
-      prod.mayorista_cantidad_min > 0;
+      prod.cantidad_mayorista != null &&        // ✅ nombre correcto
+      prod.cantidad_mayorista > 0;
 
-    if (tieneMayorista && it.cantidad >= prod.mayorista_cantidad_min) {
+    if (tieneMayorista && it.cantidad >= prod.cantidad_mayorista) {  // ✅
       // 👉 Aplica precio mayorista
       precioAplicado = prod.precio_mayorista;
-      // Si quieres marcarlo: it.es_mayorista = 1;
-    } else {
-      // it.es_mayorista = 0;
     }
 
     // Reemplazamos datos que vienen del front por los REALES
-    it.nombre_producto = prod.nombre;
+    it.nombre_producto = prod.nombre_producto;  // ✅ nombre correcto
     it.precio_unitario = precioAplicado;
     it.exento_iva = prod.exento_iva;
 
@@ -77,6 +75,7 @@ export const validarProductos = async (items, conn) => {
 
   return { total_general, total_exento };
 };
+
 
 
 /* ============================================================

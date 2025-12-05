@@ -343,3 +343,7 @@ export const obtenerDetalleCaja = async (id_caja_sesion) => {
 
   return { caja, movimientos };
 };
+
+export const actualizarCajaAnulacion = {
+
+};

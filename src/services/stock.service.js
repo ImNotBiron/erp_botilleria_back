@@ -41,7 +41,7 @@ export const registrarMovimientoStock = async ({
   await conn.query(
     `
       INSERT INTO movimientos_stock
-      (id_producto, id_usuario, id_caja_sesion, tipo_movimiento,
+      (id_producto, id_usuario, id_caja_sesion, tipo,
        cantidad, stock_anterior, stock_nuevo, descripcion)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `,

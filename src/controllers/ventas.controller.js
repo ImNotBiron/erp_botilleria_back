@@ -1,4 +1,5 @@
 import { crearVenta } from "../services/ventas.service.js";
+import { crearVentaPos } from "../services/ventas.service.js";
 import pool from "../config/db.js";
 
 export const crearVentaController = async (req, res) => {
