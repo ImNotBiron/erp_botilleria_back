@@ -256,10 +256,18 @@ export const crearVenta = async (req, conn) => {
   };
 };
 
-// ID del producto "Hielo 1kg" 
-const HIELO_1KG_ID = 5;
+// ID/CÓDIGO del producto "Hielo 1kg" (se usará codigo_producto, no id fijo)
+const HIELO_1KG_CODIGO = "HIE001";
 
-// POS: crear venta desde carrito (productos + combos licores)
+/* ============================================================
+   CREAR VENTA POS (con combos licores + hielo bonificado)
+   ------------------------------------------------------------
+   - items:
+       tipo: "PRODUCTO" | "COMBO_LICORES"
+       si tipo === "PRODUCTO" → { id_producto, cantidad }
+       si tipo === "COMBO_LICORES" → { licor_id, bebida_id }
+   - pagos: igual que crearVenta normal
+============================================================ */
 export const crearVentaPos = async (req, conn) => {
   const { items, pagos } = req.body;
   const id_usuario = req.user?.id;
@@ -275,21 +283,29 @@ export const crearVentaPos = async (req, conn) => {
   // 1) Validar caja abierta
   const caja = await obtenerCajaActiva();
   if (!caja) {
-    throw new Error("No hay una caja abierta. No se puede registrar la venta POS.");
+    throw new Error(
+      "No hay una caja abierta. No se puede registrar la venta POS."
+    );
   }
   const id_caja_sesion = caja.id;
 
-  // 2) Construir items "planos" para cobrar (licor + bebida del combo se cobran; hielo es gratis)
+  // 2) Construir items "planos" para cobrar (licor + bebida se cobran; hielo es gratis)
   const itemsPlanos = [];
+  let cantidadHielos = 0; // cuántos hielos de combo se van a regalar
 
   for (const it of items) {
+    const cantidad = Number(it.cantidad) || 1;
+
+    // Producto normal del POS
     if (it.tipo === "PRODUCTO") {
       itemsPlanos.push({
         id_producto: it.id_producto,
-        cantidad: Number(it.cantidad) || 1,
+        cantidad,
       });
+      continue;
     }
 
+    // Combo licores (licor + bebida + hielo regalo)
     if (it.tipo === "COMBO_LICORES") {
       if (!it.licor_id || !it.bebida_id) {
         throw new Error("Combo licores incompleto (falta licor o bebida).");
@@ -307,8 +323,13 @@ export const crearVentaPos = async (req, conn) => {
         cantidad: 1,
       });
 
-      // El hielo NO se cobra aquí (solo stock y detalle más abajo)
+      // El hielo NO se cobra aquí, solo contamos para bonificarlo después
+      cantidadHielos += 1;
+      continue;
     }
+
+    // Si llega un tipo raro
+    throw new Error("Tipo de ítem POS inválido.");
   }
 
   if (itemsPlanos.length === 0) {
@@ -316,7 +337,11 @@ export const crearVentaPos = async (req, conn) => {
   }
 
   // 3) Validar productos con tu validador normal (aplica precios, exento, mayorista, etc.)
-  const { total_general, total_exento } = await validarProductos(itemsPlanos, conn);
+  //    validarProductos MUTARÁ itemsPlanos añadiendo nombre_producto, precio_unitario, exento_iva
+  const { total_general, total_exento } = await validarProductos(
+    itemsPlanos,
+    conn
+  );
   const total_afecto = total_general - total_exento;
 
   if (total_general <= 0) {
@@ -381,11 +406,11 @@ export const crearVentaPos = async (req, conn) => {
       [
         id_venta,
         it.id_producto,
-        it.nombre_producto,                   // ✅ viene del validador
+        it.nombre_producto, // viene desde validarProductos
         it.cantidad,
-        it.precio_unitario,                   // ✅ viene del validador
-        it.precio_unitario * it.cantidad,     // ✅ total por línea
-        it.exento_iva,                        // ✅ viene del validador
+        it.precio_unitario, // viene desde validarProductos
+        it.precio_unitario * it.cantidad,
+        it.exento_iva,
       ]
     );
 
@@ -400,109 +425,54 @@ export const crearVentaPos = async (req, conn) => {
     });
   }
 
-  // ...
-
+  // 8) Agregar detalle y movimiento de stock para hielos bonificados (gratis)
   if (cantidadHielos > 0) {
-    // Traer datos reales del producto hielo
+    // Traer datos reales del producto hielo usando codigo_producto = 'HIE001'
     const [rowsHielo] = await conn.query(
       `
-        SELECT nombre_producto, exento_iva
+        SELECT id, nombre_producto, exento_iva
         FROM productos
-        WHERE id = ?
+        WHERE codigo_producto = ?
       `,
-      [HIELO_1KG_ID]
+      [HIELO_1KG_CODIGO]
     );
 
     if (rowsHielo.length === 0) {
-      throw new Error("Producto Hielo 1kg no encontrado en la base de datos.");
+      throw new Error(
+        "Producto Hielo 1kg (codigo HIE001) no encontrado en la base de datos."
+      );
     }
 
     const prodHielo = rowsHielo[0];
 
-    // Insertar UNA línea por cada combo (si quieres agrupar, se podría sumar cantidad)
-    for (let i = 0; i < cantidadHielos; i++) {
-      await conn.query(
-        `
-          INSERT INTO ventas_detalle
-          (id_venta, id_producto, nombre_producto, cantidad,
-           precio_unitario, precio_final, exento_iva)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          id_venta,
-          HIELO_1KG_ID,
-          prodHielo.nombre_producto,   // ✅ campo correcto
-          1,
-          0,                           // se regala
-          0,
-          prodHielo.exento_iva,
-        ]
-      );
-
-      await registrarMovimientoStock({
-        conn,
-        id_producto: HIELO_1KG_ID,
-        id_usuario,
-        id_caja_sesion,
-        tipo_movimiento: "VENTA",
-        cantidad: -1,
-        descripcion: `Hielo bonificado en combo licores. Venta POS N° ${id_venta}`,
-      });
-    }
-  }
-
-
-  // 8) Agregar detalle y movimiento de stock para cada hielo de combo (gratis)
-  const combos = items.filter((it) => it.tipo === "COMBO_LICORES");
-  const cantidadHielos = combos.length;
-
-  if (cantidadHielos > 0) {
-    // Traer datos reales del producto hielo
-    const [rowsHielo] = await conn.query(
+    // Insertamos UNA línea con cantidad = cantidadHielos, precio 0
+    await conn.query(
       `
-        SELECT nombre_producto, exento_iva
-        FROM productos
-        WHERE id = ?
+        INSERT INTO ventas_detalle
+        (id_venta, id_producto, nombre_producto, cantidad,
+         precio_unitario, precio_final, exento_iva)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `,
-      [HIELO_1KG_ID]
+      [
+        id_venta,
+        prodHielo.id,
+        prodHielo.nombre_producto,
+        cantidadHielos,
+        0, // 🔥 se regala
+        0,
+        prodHielo.exento_iva,
+      ]
     );
 
-    if (rowsHielo.length === 0) {
-      throw new Error("Producto Hielo 1kg no encontrado en la base de datos.");
-    }
-
-    const prodHielo = rowsHielo[0];
-
-    // Insertar UNA línea por cada combo (si quieres agrupar, se podría sumar cantidad)
-    for (let i = 0; i < cantidadHielos; i++) {
-      await conn.query(
-        `
-          INSERT INTO ventas_detalle
-          (id_venta, id_producto, nombre_producto, cantidad,
-           precio_unitario, precio_final, exento_iva)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          id_venta,
-          HIELO_1KG_ID,
-          prodHielo.nombre,
-          1,
-          0, // 🔥 se regala
-          0,
-          prodHielo.exento_iva,
-        ]
-      );
-
-      await registrarMovimientoStock({
-        conn,
-        id_producto: HIELO_1KG_ID,
-        id_usuario,
-        id_caja_sesion,
-        tipo_movimiento: "VENTA",
-        cantidad: -1,
-        descripcion: `Hielo bonificado en combo licores. Venta POS N° ${id_venta}`,
-      });
-    }
+    await registrarMovimientoStock({
+      conn,
+      id_producto: prodHielo.id,
+      id_usuario,
+      id_caja_sesion,
+      tipo_movimiento: "VENTA",
+      cantidad: -cantidadHielos,
+      descripcion: `Hielo bonificado en combo licores. Venta POS N° ${id_venta}`,
+    });
   }
 
   // 9) Actualizar caja con totales de la venta
@@ -532,4 +502,3 @@ export const crearVentaPos = async (req, conn) => {
     total_exento,
   };
 };
-
