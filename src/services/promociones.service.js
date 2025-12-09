@@ -154,3 +154,74 @@ export async function cambiarEstadoPromoFija(id, activa) {
     [activa ? 1 : 0, id]
   );
 }
+
+/* ============================================================
+   OBTENER PROMOCIONES FIJAS ACTIVAS PARA POS
+   ------------------------------------------------------------
+   - Solo tipo_promocion = 'FIJA'
+   - Solo promociones.activa = 1
+   - Incluye detalle del combo + datos del producto
+============================================================ */
+export const obtenerPromocionesFijasActivas = async () => {
+  const [rows] = await pool.query(
+    `
+    SELECT
+      p.id               AS id_promocion,
+      p.nombre           AS nombre_promocion,
+      p.descripcion,
+      p.tipo_promocion,
+      p.precio_promocion,
+
+      d.id_producto,
+      d.cantidad,
+      d.es_gratis,
+      d.es_variable,
+
+      prod.nombre_producto,
+      prod.codigo_producto,
+      prod.precio_venta,
+      prod.exento_iva
+    FROM promociones p
+    JOIN promociones_detalle d
+      ON d.id_promocion = p.id
+    JOIN productos prod
+      ON prod.id = d.id_producto
+    WHERE
+      p.activa = 1
+      AND p.tipo_promocion = 'FIJA'
+    ORDER BY p.id, d.id
+    `
+  );
+
+  // Agrupamos por promoción
+  const map = new Map();
+
+  for (const row of rows) {
+    let promo = map.get(row.id_promocion);
+    if (!promo) {
+      promo = {
+        id: row.id_promocion,
+        nombre: row.nombre_promocion,
+        descripcion: row.descripcion,
+        tipo_promocion: row.tipo_promocion, // siempre 'FIJA' aquí
+        precio_promocion: row.precio_promocion,
+        items: [],
+      };
+      map.set(row.id_promocion, promo);
+    }
+
+    promo.items.push({
+      id_producto: row.id_producto,
+      nombre_producto: row.nombre_producto,
+      codigo_producto: row.codigo_producto,
+      cantidad: row.cantidad,
+      es_gratis: row.es_gratis === 1,
+      es_variable: row.es_variable === 1,
+      precio_venta: row.precio_venta,
+      exento_iva: row.exento_iva,
+    });
+  }
+
+  return Array.from(map.values());
+};
+

@@ -1,6 +1,8 @@
 // src/controllers/promociones.controller.js
 import * as promocionesService from "../services/promociones.service.js";
 
+import { obtenerPromocionesFijasActivas } from "../services/promociones.service.js";
+
 export async function listarPromosFijas(req, res, next) {
   try {
     const promos = await promocionesService.listarPromosFijas();
@@ -80,3 +82,19 @@ export async function cambiarEstadoPromoFija(req, res, next) {
     next(err);
   }
 }
+
+/* ============================================================
+   LISTAR PROMOS PARA POS
+============================================================ */
+export const listarPromocionesPosController = async (req, res) => {
+  try {
+    const promociones = await obtenerPromocionesFijasActivas();
+    res.json({ success: true, promociones });
+  } catch (err) {
+    console.error("Error al obtener promociones POS:", err);
+    res.status(500).json({
+      success: false,
+      error: "Error al obtener promociones para POS.",
+    });
+  }
+};

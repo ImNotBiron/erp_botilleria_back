@@ -6,25 +6,28 @@
    - Verifica que existan productos
    - Obtiene precio real y exento desde BD
    - Reemplaza lo enviado por frontend (seguridad)
+   - Aplica precio mayorista si corresponde
    - Calcula total_general y total_exento
 ============================================================ */
 
-// src/validators/venta.validator.js
 export const validarProductos = async (items, conn) => {
-  if (!items || items.length === 0)
+  if (!items || items.length === 0) {
     throw new Error("La venta no contiene productos.");
+  }
 
   let total_general = 0;
   let total_exento = 0;
 
   for (const it of items) {
-    if (!it.id_producto)
+    if (!it.id_producto) {
       throw new Error("Producto sin ID.");
+    }
 
-    if (it.cantidad == null || it.cantidad <= 0)
+    if (it.cantidad == null || it.cantidad <= 0) {
       throw new Error("Cantidad inválida para un producto.");
+    }
 
-    // 🔥 Traemos el producto REAL desde la BD, incluyendo mayorista
+    // Traemos el producto REAL desde la BD, incluyendo mayorista
     const [prodRows] = await conn.query(
       `
       SELECT 
@@ -39,31 +42,35 @@ export const validarProductos = async (items, conn) => {
       [it.id_producto]
     );
 
-    if (prodRows.length === 0)
+    if (prodRows.length === 0) {
       throw new Error("Producto no existe en la base de datos.");
+    }
 
     const prod = prodRows[0];
 
     // ===============================
     // LÓGICA DE PRECIO APLICADO
     // ===============================
-    let precioAplicado = prod.precio_venta;
+    let precioAplicado = Number(prod.precio_venta) || 0;
+    let esMayorista = 0;
 
     const tieneMayorista =
       prod.precio_mayorista != null &&
-      prod.precio_mayorista > 0 &&
-      prod.cantidad_mayorista != null &&        // ✅ nombre correcto
-      prod.cantidad_mayorista > 0;
+      Number(prod.precio_mayorista) > 0 &&
+      prod.cantidad_mayorista != null &&
+      Number(prod.cantidad_mayorista) > 0;
 
-    if (tieneMayorista && it.cantidad >= prod.cantidad_mayorista) {  // ✅
+    if (tieneMayorista && it.cantidad >= prod.cantidad_mayorista) {
       // 👉 Aplica precio mayorista
-      precioAplicado = prod.precio_mayorista;
+      precioAplicado = Number(prod.precio_mayorista) || precioAplicado;
+      esMayorista = 1;
     }
 
     // Reemplazamos datos que vienen del front por los REALES
-    it.nombre_producto = prod.nombre_producto;  // ✅ nombre correcto
+    it.nombre_producto = prod.nombre_producto;
     it.precio_unitario = precioAplicado;
     it.exento_iva = prod.exento_iva;
+    it.es_mayorista = esMayorista;
 
     const subtotal = precioAplicado * it.cantidad;
     total_general += subtotal;
@@ -76,8 +83,6 @@ export const validarProductos = async (items, conn) => {
   return { total_general, total_exento };
 };
 
-
-
 /* ============================================================
    VALIDAR PAGOS
    ------------------------------------------------------------
@@ -86,32 +91,38 @@ export const validarProductos = async (items, conn) => {
    - Tarjetas/transferencias NO pueden pagar exentos
    - Saltar reglas si la venta es INTERNA
 ============================================================ */
+
 export const validarPagos = (pagos, total_general, total_exento, tipo_venta) => {
-  if (!pagos || pagos.length === 0)
+  if (!pagos || pagos.length === 0) {
     throw new Error("Debe ingresar al menos un método de pago.");
+  }
 
-  // Validar suma total
-  const sumaPagos = pagos.reduce((acc, p) => acc + Number(p.monto), 0);
+  // Normalizamos montos a número
+  const sumaPagos = pagos.reduce(
+    (acc, p) => acc + (Number(p.monto) || 0),
+    0
+  );
 
-  if (sumaPagos !== total_general)
+  if (sumaPagos !== total_general) {
     throw new Error(
       `La suma de los pagos (${sumaPagos}) no coincide con el total de la venta (${total_general}).`
     );
+  }
 
   // Regla especial para ventas internas → no se aplican las restricciones del SII
-  if (tipo_venta === "INTERNA") return;
+  if ((tipo_venta || "").toUpperCase() === "INTERNA") return;
 
-  // Tarjetas no pueden pagar productos exentos
+  // Tarjetas / transferencia no pueden pagar productos exentos
   const pagosNoEfectivo = pagos
     .filter((p) => !["EFECTIVO", "GIRO"].includes(p.tipo))
-    .reduce((acc, p) => acc + Number(p.monto), 0);
+    .reduce((acc, p) => acc + (Number(p.monto) || 0), 0);
 
   const maxNoEfectivo = total_general - total_exento;
 
   if (pagosNoEfectivo > maxNoEfectivo) {
     throw new Error(
-      "Pagos con tarjeta/transferencia exceden el monto afecto. "
-      + "No se pueden pagar productos exentos (cigarros) con tarjeta."
+      "Pagos con tarjeta/transferencia exceden el monto afecto. " +
+        "No se pueden pagar productos exentos (cigarros) con tarjeta."
     );
   }
 };
@@ -123,11 +134,13 @@ export const validarPagos = (pagos, total_general, total_exento, tipo_venta) => 
    - NORMAL
    - INTERNA
 ============================================================ */
+
 export const validarTipoVenta = (tipo) => {
   const t = (tipo || "").toUpperCase();
 
-  if (t !== "NORMAL" && t !== "INTERNA")
+  if (t !== "NORMAL" && t !== "INTERNA") {
     throw new Error("Tipo de venta inválido. Debe ser NORMAL o INTERNA.");
+  }
 
   return t;
 };

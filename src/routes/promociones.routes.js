@@ -10,5 +10,6 @@ router.get("/:id", requireAuth, requireAdmin, promocionesController.obtenerPromo
 router.post("/", requireAuth, requireAdmin, promocionesController.crearPromoFija);
 router.put("/:id", requireAuth, requireAdmin, promocionesController.actualizarPromoFija);
 router.patch("/:id/estado", requireAuth, requireAdmin, promocionesController.cambiarEstadoPromoFija);
+router.get("/pos/activas", requireAuth, promocionesController.listarPromocionesPosController);
 
 export default router;
