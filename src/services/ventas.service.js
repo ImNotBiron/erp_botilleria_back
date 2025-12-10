@@ -503,6 +503,8 @@ export const crearVentaPos = async (req, conn) => {
   };
 };
 
+
+
 // POS: previsualizar venta (totales + precios reales + promos fijas)
 export const previsualizarVentaPos = async (req, conn) => {
   const { items } = req.body;
@@ -626,8 +628,30 @@ export const previsualizarVentaPos = async (req, conn) => {
   };
 };
 
-// Listar ventas de un usuario (últimas 100)
-export const listarVentasUsuario = async (id_usuario, conn) => {
+// ================================
+// LISTAR VENTAS POR USUARIO (+ filtros)
+// ================================
+export const listarVentasUsuario = async (id_usuario, filtros = {}, conn) => {
+  const { fecha_desde, fecha_hasta, id_caja_sesion } = filtros;
+
+  let where = "WHERE v.id_usuario = ?";
+  const params = [id_usuario];
+
+  if (fecha_desde) {
+    where += " AND v.fecha >= ?";
+    params.push(fecha_desde + " 00:00:00");
+  }
+
+  if (fecha_hasta) {
+    where += " AND v.fecha <= ?";
+    params.push(fecha_hasta + " 23:59:59");
+  }
+
+  if (id_caja_sesion) {
+    where += " AND v.id_caja_sesion = ?";
+    params.push(id_caja_sesion);
+  }
+
   const [rows] = await conn.query(
     `
       SELECT
@@ -637,15 +661,78 @@ export const listarVentasUsuario = async (id_usuario, conn) => {
         v.total_general,
         v.total_afecto,
         v.total_exento,
-        v.id_caja_sesion
+        v.id_caja_sesion,
+        v.estado
       FROM ventas v
-      WHERE v.id_usuario = ?
+      ${where}
       ORDER BY v.fecha DESC
-      LIMIT 100
+      LIMIT 200
     `,
-    [id_usuario]
+    params
   );
 
   return rows;
 };
+
+// ================================
+// OBTENER DETALLE DE UNA VENTA
+// (cabecera + productos + pagos)
+// ================================
+export const obtenerVentaDetalle = async (id_venta, id_usuario, conn) => {
+  // Cabecera (además valida que la venta sea del usuario)
+  const [cabRows] = await conn.query(
+    `
+      SELECT
+        v.id,
+        v.fecha,
+        v.tipo_venta,
+        v.total_general,
+        v.total_afecto,
+        v.total_exento,
+        v.id_caja_sesion,
+        v.estado
+      FROM ventas v
+      WHERE v.id = ? AND v.id_usuario = ?
+    `,
+    [id_venta, id_usuario]
+  );
+
+  if (cabRows.length === 0) {
+    throw new Error("Venta no encontrada o no pertenece al usuario.");
+  }
+
+  const cabecera = cabRows[0];
+
+  // Detalle de productos
+  const [items] = await conn.query(
+    `
+      SELECT
+        id_producto,
+        nombre_producto,
+        cantidad,
+        precio_unitario,
+        precio_final,
+        exento_iva,
+        es_promo
+      FROM ventas_detalle
+      WHERE id_venta = ?
+    `,
+    [id_venta]
+  );
+
+  // Pagos
+  const [pagos] = await conn.query(
+    `
+      SELECT
+        tipo_pago,
+        monto
+      FROM ventas_pagos
+      WHERE id_venta = ?
+    `,
+    [id_venta]
+  );
+
+  return { cabecera, items, pagos };
+};
+
 

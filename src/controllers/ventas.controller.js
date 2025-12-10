@@ -1,4 +1,4 @@
-import { crearVenta, previsualizarVentaPos, listarVentasUsuario } from "../services/ventas.service.js";
+import { crearVenta, previsualizarVentaPos, listarVentasUsuario, obtenerVentaDetalle } from "../services/ventas.service.js";
 import { crearVentaPos } from "../services/ventas.service.js";
 import pool from "../config/db.js";
 
@@ -55,6 +55,9 @@ export const previsualizarVentaPosController = async (req, res) => {
   }
 };
 
+// ===============================
+// MIS VENTAS (LISTADO + FILTROS)
+// ===============================
 export const listarMisVentasController = async (req, res) => {
   const conn = await pool.getConnection();
 
@@ -64,8 +67,42 @@ export const listarMisVentasController = async (req, res) => {
       return res.status(401).json({ error: "Usuario no identificado." });
     }
 
-    const ventas = await listarVentasUsuario(id_usuario, conn);
+    const { desde, hasta, id_caja } = req.query;
+
+    const filtros = {
+      fecha_desde: desde || null,
+      fecha_hasta: hasta || null,
+      id_caja_sesion: id_caja ? Number(id_caja) : null,
+    };
+
+    const ventas = await listarVentasUsuario(id_usuario, filtros, conn);
     res.json({ success: true, ventas });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  } finally {
+    conn.release();
+  }
+};
+
+// ===============================
+// DETALLE DE UNA VENTA DEL USUARIO
+// ===============================
+export const obtenerMiVentaDetalleController = async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const id_usuario = req.user?.id;
+    if (!id_usuario) {
+      return res.status(401).json({ error: "Usuario no identificado." });
+    }
+
+    const id_venta = Number(req.params.id);
+    if (!id_venta) {
+      return res.status(400).json({ error: "ID de venta inválido." });
+    }
+
+    const detalle = await obtenerVentaDetalle(id_venta, id_usuario, conn);
+    res.json({ success: true, ...detalle });
   } catch (err) {
     res.status(400).json({ error: err.message });
   } finally {
