@@ -95,17 +95,6 @@ export const actualizarCajaDesdeVenta = async (
     ]
   );
 
-  // En ventas internas, consideramos que TODO el monto es un movimiento con caja vecina
-  if (tipo_venta === "INTERNA") {
-    await conn.query(
-      `
-        UPDATE caja_sesiones
-        SET movimientos_vecina = movimientos_vecina + ?
-        WHERE id = ?
-      `,
-      [efectivo_giro + debito + credito + transferencia, id_caja_sesion]
-    );
-  }
 };
 
 /* ============================================================

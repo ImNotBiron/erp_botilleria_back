@@ -115,8 +115,9 @@ export const registrarMovimiento = async ({
     throw new Error("No hay caja abierta. No se pueden registrar movimientos.");
   }
 
-  if (!["INGRESO", "EGRESO", "VECINA"].includes(tipo)) {
-    throw new Error("Tipo de movimiento inválido.");
+  // ✅ Solo INGRESO / EGRESO afectan los agregados
+  if (!["INGRESO", "EGRESO"].includes(tipo)) {
+    throw new Error("Tipo de movimiento inválido. Solo INGRESO o EGRESO.");
   }
 
   if (!categoria || typeof categoria !== "string") {
@@ -132,7 +133,6 @@ export const registrarMovimiento = async ({
   try {
     await conn.beginTransaction();
 
-    // Registrar movimiento
     await conn.query(
       `
         INSERT INTO caja_movimientos
@@ -152,40 +152,24 @@ export const registrarMovimiento = async ({
       ]
     );
 
-    // Actualizar agregados de la caja
     let deltaIngresos = 0;
     let deltaEgresos = 0;
-    let deltaMovVecina = 0;
 
     if (tipo === "INGRESO") {
       deltaIngresos = montoNum;
     } else if (tipo === "EGRESO") {
       deltaEgresos = montoNum;
-    } else if (tipo === "VECINA") {
-      // Definimos:
-      // - categoria = 'A_VECINA'    → local entrega efectivo a vecina (disminuye local, sube vecina)
-      // - categoria = 'DESDE_VECINA' → vecina entrega efectivo a local (sube local, baja vecina)
-      if (categoria === "A_VECINA") {
-        deltaMovVecina = montoNum; // positivo
-      } else if (categoria === "DESDE_VECINA") {
-        deltaMovVecina = -montoNum; // negativo
-      } else {
-        throw new Error(
-          "Categoría inválida para movimiento de caja vecina. Use 'A_VECINA' o 'DESDE_VECINA'."
-        );
-      }
     }
 
     await conn.query(
       `
         UPDATE caja_sesiones
         SET
-          ingresos_extra     = ingresos_extra     + ?,
-          egresos            = egresos            + ?,
-          movimientos_vecina = movimientos_vecina + ?
+          ingresos_extra = ingresos_extra + ?,
+          egresos        = egresos        + ?
         WHERE id = ?
       `,
-      [deltaIngresos, deltaEgresos, deltaMovVecina, caja.id]
+      [deltaIngresos, deltaEgresos, caja.id]
     );
 
     await conn.commit();
@@ -196,6 +180,7 @@ export const registrarMovimiento = async ({
     conn.release();
   }
 };
+
 
 /* ============================================================
    CERRAR CAJA
@@ -217,20 +202,17 @@ export const cerrarCaja = async (
   const realLocalNum = toIntOrZero(total_real_local);
   const realVecinaNum = toIntOrZero(total_real_vecina);
 
-  // Fórmulas oficiales (según lo que definimos juntos):
+  // ✅ Reglas nuevas:
 
-  // movimientos_vecina:
-  //  - positivo  → local envió a vecina (local -m, vecina +m)
-  //  - negativo  → local recibió de vecina (local +m, vecina -m)
-
+  // 1) Caja LOCAL: NO se descuenta exento, y Caja Vecina no afecta el efectivo local.
   const totalEsperadoLocal =
     caja.inicial_local +
     caja.total_efectivo_giro +
     caja.ingresos_extra -
-    caja.egresos -
-    caja.movimientos_vecina;
+    caja.egresos;
 
-  const totalEsperadoVecina = caja.inicial_vecina + caja.movimientos_vecina;
+  // 2) Caja VECINA: solo comparamos saldo inicial vs saldo final
+  const totalEsperadoVecina = caja.inicial_vecina;
 
   const diferenciaLocal = realLocalNum - totalEsperadoLocal;
   const diferenciaVecina = realVecinaNum - totalEsperadoVecina;
@@ -273,6 +255,7 @@ export const cerrarCaja = async (
     diferencia_vecina: diferenciaVecina,
   };
 };
+
 
 /* ============================================================
    HISTORIAL DE CAJAS
