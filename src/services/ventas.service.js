@@ -99,48 +99,77 @@ export const actualizarCajaDesdeVenta = async (
 
 /* ============================================================
    CREAR VENTA
-   ------------------------------------------------------------
-   Flujo:
-   1. Validar usuario y caja activa
-   2. Validar productos (precios y exento desde BD)
-   3. Validar pagos (regla exentos / tarjetas)
-   4. Insertar cabecera de venta
-   5. Insertar pagos
-   6. Insertar detalle
-   7. Actualizar stock
-   8. Actualizar caja
-   9. Crear voucher JSON
 ============================================================ */
 export const crearVenta = async (req, conn) => {
-  const { items, pagos, tipo_venta = "NORMAL", nota_interna } = req.body;
-  const id_usuario = req.user?.id;
+  const {
+    items,
+    pagos,
+    tipo_venta = "NORMAL",
+    nota_interna,
+    monto_total_interno,
+  } = req.body;
 
+  const id_usuario = req.user?.id;
   if (!id_usuario) {
     throw new Error("Usuario no identificado.");
   }
 
-  // Normalizar tipo de venta
+  // Normalizar tipo
   const tipoVenta = tipo_venta === "INTERNA" ? "INTERNA" : "NORMAL";
 
-  // 1) Validar que exista caja activa
+  // 1) Validar caja activa
   const caja = await obtenerCajaActiva();
   if (!caja) {
     throw new Error("No hay una caja abierta. No se puede registrar la venta.");
   }
   const id_caja_sesion = caja.id;
 
-  // 2) Validar productos (y obtener precios desde BD)
-  const { total_general, total_exento } = await validarProductos(items, conn);
-  const total_afecto = total_general - total_exento;
+  // 2) Validar productos (precios reales desde BD)
+  const {
+    total_general: totalBase,
+    total_exento: totalExentoBase,
+  } = await validarProductos(items, conn);
 
-  if (total_general <= 0) {
+  const totalAfectoBase = totalBase - totalExentoBase;
+
+  if (totalBase <= 0) {
     throw new Error("El total de la venta debe ser mayor a cero.");
   }
 
-  // 3) Validar pagos (sumas y reglas exento/tarjeta)
-  validarPagos(pagos, total_general, total_exento, tipoVenta);
+  // ========================================================
+  //       NUEVA LÓGICA DE TOTALES PARA VENTA INTERNA
+  // ========================================================
 
-  // 4) Insertar cabecera de la venta
+  // Por defecto, si es venta normal:
+  let total_general = totalBase;
+  let total_afecto = totalAfectoBase;
+  let total_exento_final = totalExentoBase;
+
+  // Si es venta interna, el admin puede definir un monto total
+  if (tipoVenta === "INTERNA" && monto_total_interno != null) {
+    const m = Number(monto_total_interno);
+
+    if (Number.isNaN(m) || m <= 0) {
+      throw new Error("Monto total interno inválido.");
+    }
+
+    // Para internas:
+    // - total_general = monto definido por admin
+    // - total_afecto = monto definido por admin
+    // - total_exento_final = 0 (no aplica SII)
+    total_general = m;
+    total_afecto = m;
+    total_exento_final = 0;
+  }
+
+  // ========================================================
+  //   VALIDAR PAGOS CON EL TOTAL FINAL (INCLUIDO INTERNA)
+  // ========================================================
+  validarPagos(pagos, total_general, total_exento_final, tipoVenta);
+
+    // ========================================================
+  // 5) INSERTAR CABECERA DE LA VENTA
+  // ========================================================
   const [ventaRes] = await conn.query(
     `
       INSERT INTO ventas (
@@ -159,16 +188,18 @@ export const crearVenta = async (req, conn) => {
       id_usuario,
       id_caja_sesion,
       tipoVenta,
-      total_general,
-      total_afecto,
-      total_exento,
+      total_general,        // <-- puede ser total_base o total_interno
+      total_afecto,         // <-- si es interna, queda igual al monto interno
+      total_exento_final,   // <-- internas = 0
       tipoVenta === "INTERNA" ? (nota_interna || null) : null,
     ]
   );
 
   const id_venta = ventaRes.insertId;
 
-  // 5) Insertar pagos
+  // ========================================================
+  // 6) INSERTAR PAGOS
+  // ========================================================
   for (const p of pagos) {
     const tipo_pago = p.tipo;
     const monto = Number(p.monto) || 0;
@@ -183,50 +214,55 @@ export const crearVenta = async (req, conn) => {
     );
   }
 
-  // 6) Insertar detalle + 7) Actualizar stock (registrar movimientos);
- for (const it of items) { 
+  // ========================================================
+  // 7) INSERTAR DETALLE + 8) ACTUALIZAR STOCK
+  // ========================================================
+  for (const it of items) {
+    // Insertar detalle
+    await conn.query(
+      `
+        INSERT INTO ventas_detalle
+        (id_venta, id_producto, nombre_producto, cantidad,
+         precio_unitario, precio_final, exento_iva)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        id_venta,
+        it.id_producto,
+        it.nombre_producto,       
+        it.cantidad,
+        it.precio_unitario,
+        it.precio_unitario * it.cantidad,
+        it.exento_iva,
+      ]
+    );
 
-  // Insertar detalle
-  await conn.query(
-    `
-      INSERT INTO ventas_detalle
-      (id_venta, id_producto, nombre_producto, cantidad,
-       precio_unitario, precio_final, exento_iva)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `,
-    [
-      id_venta,
-      it.id_producto,
-      it.nombre_producto,
-      it.cantidad,
-      it.precio_unitario,
-      it.precio_unitario * it.cantidad,
-      it.exento_iva,
-    ]
-  );
+    // Movimiento de stock
+    await registrarMovimientoStock({
+      conn,
+      id_producto: it.id_producto,
+      id_usuario,
+      id_caja_sesion,
+      tipo_movimiento: "VENTA",
+      cantidad: -it.cantidad,
+      descripcion: `Venta N° ${id_venta}`,
+    });
+  }
 
-  // Registrar movimiento de stock PROFESIONAL
-  await registrarMovimientoStock({
-    conn,
-    id_producto: it.id_producto,
-    id_usuario,
-    id_caja_sesion,
-    tipo_movimiento: "VENTA",
-    cantidad: -it.cantidad, // venta = resta stock
-    descripcion: `Venta N° ${id_venta}`
-  });
-}
-
-  // 8) Actualizar caja con totales de la venta
+  // ========================================================
+  // 9) ACTUALIZAR CAJA (con los totales finales)
+  // ========================================================
   await actualizarCajaDesdeVenta(
     conn,
     id_caja_sesion,
     pagos,
-    total_exento,
+    total_exento_final,  // <-- si es interna, 0
     tipoVenta
   );
 
-  // 9) Guardar JSON para voucher
+  // ========================================================
+  // 10) GUARDAR VOUCHER JSON
+  // ========================================================
   await conn.query(
     `
       INSERT INTO vouchers (id_venta, contenido)
@@ -235,15 +271,18 @@ export const crearVenta = async (req, conn) => {
     [id_venta, JSON.stringify({ items, pagos })]
   );
 
-  // Respuesta al controller
+  // ========================================================
+  // RESPUESTA AL CONTROLLER
+  // ========================================================
   return {
     id_venta,
     tipo_venta: tipoVenta,
     total_general,
     total_afecto,
-    total_exento,
+    total_exento: total_exento_final,
   };
 };
+
 
 // ID/CÓDIGO del producto "Hielo 1kg" (se usará codigo_producto, no id fijo)
 const HIELO_1KG_CODIGO = "HIE001";

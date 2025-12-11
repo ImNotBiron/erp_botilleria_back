@@ -115,9 +115,9 @@ export const registrarMovimiento = async ({
     throw new Error("No hay caja abierta. No se pueden registrar movimientos.");
   }
 
-  // ✅ Solo INGRESO / EGRESO afectan los agregados
+  // 🔒 Reglas nuevas: solo queremos que afecten agregados INGRESO y EGRESO
   if (!["INGRESO", "EGRESO"].includes(tipo)) {
-    throw new Error("Tipo de movimiento inválido. Solo INGRESO o EGRESO.");
+    throw new Error("Tipo de movimiento inválido. Solo se permite INGRESO o EGRESO.");
   }
 
   if (!categoria || typeof categoria !== "string") {
@@ -133,6 +133,7 @@ export const registrarMovimiento = async ({
   try {
     await conn.beginTransaction();
 
+    // Registrar movimiento en la tabla de detalle
     await conn.query(
       `
         INSERT INTO caja_movimientos
@@ -152,6 +153,7 @@ export const registrarMovimiento = async ({
       ]
     );
 
+    // Actualizar agregados en caja_sesiones
     let deltaIngresos = 0;
     let deltaEgresos = 0;
 
@@ -182,6 +184,7 @@ export const registrarMovimiento = async ({
 };
 
 
+
 /* ============================================================
    CERRAR CAJA
    ------------------------------------------------------------
@@ -202,16 +205,22 @@ export const cerrarCaja = async (
   const realLocalNum = toIntOrZero(total_real_local);
   const realVecinaNum = toIntOrZero(total_real_vecina);
 
-  // ✅ Reglas nuevas:
-
-  // 1) Caja LOCAL: NO se descuenta exento, y Caja Vecina no afecta el efectivo local.
+  // 💰 CAJA LOCAL
+  // Efectivo esperado:
+  //   inicial_local
+  // + total_efectivo_giro (incluye exento)
+  // + ingresos_extra
+  // - egresos
+  //
+  // No restamos exento porque físicamente está en la caja.
   const totalEsperadoLocal =
     caja.inicial_local +
     caja.total_efectivo_giro +
     caja.ingresos_extra -
     caja.egresos;
 
-  // 2) Caja VECINA: solo comparamos saldo inicial vs saldo final
+  // 🏦 CAJA VECINA
+  // Sólo comparamos saldo inicial vs saldo final.
   const totalEsperadoVecina = caja.inicial_vecina;
 
   const diferenciaLocal = realLocalNum - totalEsperadoLocal;
@@ -257,6 +266,7 @@ export const cerrarCaja = async (
 };
 
 
+
 /* ============================================================
    HISTORIAL DE CAJAS
    ------------------------------------------------------------
@@ -287,6 +297,7 @@ export const obtenerHistorialCajas = async (limite = 50) => {
    - Movimientos asociados
 ============================================================ */
 export const obtenerDetalleCaja = async (id_caja_sesion) => {
+  // Cabecera de la sesión
   const [cajaRows] = await pool.query(
     `
       SELECT
@@ -307,25 +318,45 @@ export const obtenerDetalleCaja = async (id_caja_sesion) => {
 
   const caja = cajaRows[0];
 
+  // 💡 Movimientos del turno:
+  // - Movimientos manuales (INGRESO / EGRESO)
+  // - Ventas pagadas en EFECTIVO / GIRO
+
   const [movimientos] = await pool.query(
     `
       SELECT
-        cm.*,
-        p.nombre  AS proveedor_nombre,
-        pv.nombre AS proveedor_vendedor_nombre
+        cm.id,
+        cm.tipo,
+        cm.categoria,
+        cm.monto,
+        cm.descripcion,
+        cm.fecha
       FROM caja_movimientos cm
-      LEFT JOIN proveedores p
-        ON cm.id_proveedor = p.id
-      LEFT JOIN proveedores_vendedores pv
-        ON cm.id_proveedor_vendedor = pv.id
       WHERE cm.id_caja_sesion = ?
-      ORDER BY cm.fecha ASC
+
+      UNION ALL
+
+      SELECT
+        v.id AS id,
+        'VENTA' AS tipo,
+        'VENTA_EFECTIVO' AS categoria,
+        SUM(vp.monto) AS monto,
+        CONCAT('Venta N° ', v.id) AS descripcion,
+        v.fecha AS fecha
+      FROM ventas v
+      INNER JOIN ventas_pagos vp ON vp.id_venta = v.id
+      WHERE v.id_caja_sesion = ?
+        AND vp.tipo_pago IN ('EFECTIVO', 'GIRO')
+      GROUP BY v.id, v.fecha
+
+      ORDER BY fecha ASC
     `,
-    [id_caja_sesion]
+    [id_caja_sesion, id_caja_sesion]
   );
 
   return { caja, movimientos };
 };
+
 
 export const actualizarCajaAnulacion = {
 
