@@ -1,5 +1,5 @@
-import { crearVenta, previsualizarVentaPos, listarVentasUsuario, obtenerVentaDetalle } from "../services/ventas.service.js";
-import { crearVentaPos } from "../services/ventas.service.js";
+import { crearVenta, previsualizarVentaPos, listarVentasUsuario, obtenerVentaDetalle, obtenerVentaDetalleAdmin } from "../services/ventas.service.js";
+import { crearVentaPos, devolverVentaParcial } from "../services/ventas.service.js";
 import pool from "../config/db.js";
 
 export const crearVentaController = async (req, res) => {
@@ -104,6 +104,43 @@ export const obtenerMiVentaDetalleController = async (req, res) => {
     const detalle = await obtenerVentaDetalle(id_venta, id_usuario, conn);
     res.json({ success: true, ...detalle });
   } catch (err) {
+    res.status(400).json({ error: err.message });
+  } finally {
+    conn.release();
+  }
+};
+
+export const devolverVentaParcialController = async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    const resultado = await devolverVentaParcial(req, conn);
+
+    await conn.commit();
+    res.json({ success: true, ...resultado });
+  } catch (err) {
+    await conn.rollback();
+    res.status(400).json({ error: err.message });
+  } finally {
+    conn.release();
+  }
+};
+
+export const obtenerVentaDetalleController = async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const id_venta = Number(req.params.id);
+    if (!id_venta) {
+      return res.status(400).json({ error: "ID de venta inválido." });
+    }
+
+    const detalle = await obtenerVentaDetalleAdmin(id_venta, conn);
+    res.json(detalle);
+  } catch (err) {
+    console.error(err);
     res.status(400).json({ error: err.message });
   } finally {
     conn.release();

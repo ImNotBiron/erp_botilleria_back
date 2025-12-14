@@ -763,4 +763,364 @@ export const obtenerVentaDetalle = async (id_venta, id_usuario, conn) => {
   return { cabecera, items, pagos };
 };
 
+/* ============================================================
+   ACTUALIZAR CAJA POR DEVOLUCIÓN
+   ------------------------------------------------------------
+   - Ajusta totales de métodos de pago
+   - Ajusta total_exento devuelto
+   - NO toca tickets_* (siguen representando tickets generados)
+============================================================ */
+const actualizarCajaPorDevolucion = async (
+  conn,
+  id_caja_sesion,
+  metodo_pago,
+  totalDevuelto,
+  totalExentoDevuelto
+) => {
+  const sets = [];
+  const params = [];
+
+  if (totalDevuelto > 0) {
+    if (metodo_pago === "EFECTIVO" || metodo_pago === "GIRO") {
+      sets.push("total_efectivo_giro = total_efectivo_giro - ?");
+      params.push(totalDevuelto);
+    } else if (metodo_pago === "DEBITO") {
+      sets.push("total_debito = total_debito - ?");
+      params.push(totalDevuelto);
+    } else if (metodo_pago === "CREDITO") {
+      sets.push("total_credito = total_credito - ?");
+      params.push(totalDevuelto);
+    } else if (metodo_pago === "TRANSFERENCIA") {
+      sets.push("total_transferencia = total_transferencia - ?");
+      params.push(totalDevuelto);
+    }
+  }
+
+  if (totalExentoDevuelto > 0) {
+    sets.push("total_exento = total_exento - ?");
+    params.push(totalExentoDevuelto);
+  }
+
+  if (sets.length === 0) return;
+
+  const sql = `
+    UPDATE caja_sesiones
+    SET ${sets.join(", ")}
+    WHERE id = ?
+  `;
+  params.push(id_caja_sesion);
+
+  await conn.query(sql, params);
+};
+
+/* ============================================================
+   DEVOLVER VENTA (PARCIAL O TOTAL)
+   ------------------------------------------------------------
+   Body esperado:
+   - items: [{ id_producto, cantidad }]
+   - motivo: string (opcional)
+   - metodo_pago: 'EFECTIVO' | 'GIRO' | 'DEBITO' | 'CREDITO' | 'TRANSFERENCIA'
+============================================================ */
+export const devolverVentaParcial = async (req, conn) => {
+  const id_usuario = req.user?.id;
+  if (!id_usuario) {
+    throw new Error("Usuario no identificado.");
+  }
+
+  const id_venta = Number(req.params.id || req.body.id_venta);
+  if (!id_venta) {
+    throw new Error("ID de venta inválido.");
+  }
+
+  const { items, motivo, metodo_pago } = req.body;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error("Debes indicar al menos un producto a devolver.");
+  }
+
+  const metodosValidos = ["EFECTIVO", "GIRO", "DEBITO", "CREDITO", "TRANSFERENCIA"];
+  if (!metodosValidos.includes(metodo_pago)) {
+    throw new Error("Método de devolución inválido.");
+  }
+
+  // 1) Debe existir una caja abierta (devolución siempre se hace contra caja actual)
+  const cajaActiva = await obtenerCajaActiva();
+  if (!cajaActiva) {
+    throw new Error("No hay una caja abierta para registrar la devolución.");
+  }
+  const id_caja_sesion_dev = cajaActiva.id;
+
+  // 2) Obtener venta original
+  const [ventaRows] = await conn.query(
+    `
+      SELECT *
+      FROM ventas
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [id_venta]
+  );
+
+  if (ventaRows.length === 0) {
+    throw new Error("Venta no encontrada.");
+  }
+
+  const venta = ventaRows[0];
+
+  if (venta.estado !== "ACTIVA") {
+    throw new Error("Solo se pueden devolver ventas activas.");
+  }
+
+  // 3) Detalle original de la venta
+  const [detalleRows] = await conn.query(
+    `
+      SELECT id_producto, cantidad, precio_unitario, exento_iva
+      FROM ventas_detalle
+      WHERE id_venta = ?
+    `,
+    [id_venta]
+  );
+
+  if (detalleRows.length === 0) {
+    throw new Error("La venta no tiene detalle de productos.");
+  }
+
+  const detallePorProducto = new Map();
+  for (const row of detalleRows) {
+    detallePorProducto.set(row.id_producto, row);
+  }
+
+  // 4) Cantidades ya devueltas previamente (si existen)
+  const [devPrevRows] = await conn.query(
+    `
+      SELECT
+        vdd.id_producto,
+        SUM(vdd.cantidad_devuelta) AS cantidad_devuelta
+      FROM ventas_devoluciones_detalle vdd
+      JOIN ventas_devoluciones vd
+        ON vd.id = vdd.id_devolucion
+      WHERE vd.id_venta = ?
+      GROUP BY vdd.id_producto
+    `,
+    [id_venta]
+  );
+
+  const devueltaPrevPorProd = new Map();
+  for (const row of devPrevRows) {
+    devueltaPrevPorProd.set(row.id_producto, Number(row.cantidad_devuelta) || 0);
+  }
+
+  // 5) Validar ítems a devolver y calcular totales
+  const devolucionItems = [];
+  let totalDevuelto = 0;
+  let totalExentoDevuelto = 0;
+
+  for (const it of items) {
+    const id_producto = Number(it.id_producto);
+    const cantidadSolicitada = Number(it.cantidad);
+
+    if (!id_producto || cantidadSolicitada <= 0) {
+      throw new Error("Datos de producto a devolver inválidos.");
+    }
+
+    const detalle = detallePorProducto.get(id_producto);
+    if (!detalle) {
+      throw new Error(`El producto ID ${id_producto} no pertenece a la venta.`);
+    }
+
+    const cantidadVendida = Number(detalle.cantidad) || 0;
+    const cantidadDevueltaPrev = devueltaPrevPorProd.get(id_producto) || 0;
+    const cantidadDisponible = cantidadVendida - cantidadDevueltaPrev;
+
+    if (cantidadDisponible <= 0) {
+      throw new Error(
+        `El producto ID ${id_producto} ya fue devuelto completamente en devoluciones anteriores.`
+      );
+    }
+
+    if (cantidadSolicitada > cantidadDisponible) {
+      throw new Error(
+        `No puedes devolver más de la cantidad disponible para el producto ID ${id_producto}. Disponible: ${cantidadDisponible}.`
+      );
+    }
+
+    const precioUnitario = Number(detalle.precio_unitario) || 0;
+    const exento_iva = detalle.exento_iva ? 1 : 0;
+
+    const subtotal = precioUnitario * cantidadSolicitada;
+    if (subtotal <= 0) {
+      throw new Error("El subtotal de la devolución debe ser mayor a cero.");
+    }
+
+    totalDevuelto += subtotal;
+    if (exento_iva === 1) {
+      totalExentoDevuelto += subtotal;
+    }
+
+    devolucionItems.push({
+      id_producto,
+      cantidad_devuelta: cantidadSolicitada,
+      monto_linea: subtotal,
+      exento_iva,
+    });
+  }
+
+  if (totalDevuelto <= 0) {
+    throw new Error("El total devuelto debe ser mayor a cero.");
+  }
+
+  // 6) Insertar cabecera de devolución
+  const [devRes] = await conn.query(
+    `
+      INSERT INTO ventas_devoluciones
+        (id_venta, id_caja_sesion, id_usuario, motivo, metodo_pago, total_devuelto)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `,
+    [
+      id_venta,
+      id_caja_sesion_dev,
+      id_usuario,
+      motivo || null,
+      metodo_pago,
+      totalDevuelto,
+    ]
+  );
+
+  const id_devolucion = devRes.insertId;
+
+  // 7) Insertar detalle de devolución + movimientos de stock
+  for (const di of devolucionItems) {
+    await conn.query(
+      `
+        INSERT INTO ventas_devoluciones_detalle
+          (id_devolucion, id_producto, cantidad_devuelta, monto_linea, exento_iva)
+        VALUES (?, ?, ?, ?, ?)
+      `,
+      [
+        id_devolucion,
+        di.id_producto,
+        di.cantidad_devuelta,
+        di.monto_linea,
+        di.exento_iva,
+      ]
+    );
+
+    // Movimiento de stock: suma la cantidad devuelta
+    await registrarMovimientoStock({
+      conn,
+      id_producto: di.id_producto,
+      id_usuario,
+      id_caja_sesion: id_caja_sesion_dev,
+      tipo_movimiento: "DEVOLUCION",
+      cantidad: di.cantidad_devuelta,
+      descripcion: `Devolución venta N° ${id_venta}`,
+    });
+  }
+
+  // 8) Actualizar caja (totales por método de pago + exento)
+  await actualizarCajaPorDevolucion(
+    conn,
+    id_caja_sesion_dev,
+    metodo_pago,
+    totalDevuelto,
+    totalExentoDevuelto
+  );
+
+  // 9) Registrar movimiento en caja_movimientos (EGRESO DEVOLUCION)
+  await conn.query(
+    `
+      INSERT INTO caja_movimientos
+        (id_caja_sesion, tipo, categoria, monto, descripcion, id_usuario)
+      VALUES (?, 'EGRESO', 'DEVOLUCION', ?, ?, ?)
+    `,
+    [
+      id_caja_sesion_dev,
+      totalDevuelto,
+      `Devolución venta N° ${id_venta}`,
+      id_usuario,
+    ]
+  );
+
+  // 10) Marcar venta con devoluciones (si creaste el campo tiene_devoluciones)
+  try {
+    await conn.query(
+      `
+        UPDATE ventas
+        SET tiene_devoluciones = 1
+        WHERE id = ?
+      `,
+      [id_venta]
+    );
+  } catch (e) {
+    // Si la columna no existe, simplemente ignoramos el error.
+  }
+
+  // (Opcional) Si quieres marcar ANULADA cuando se devuelve el 100%,
+  // podríamos calcularlo aquí más adelante.
+
+  return {
+    id_venta,
+    id_devolucion,
+    total_devuelto: totalDevuelto,
+  };
+};
+
+export const obtenerVentaDetalleAdmin = async (id_venta, conn) => {
+  // Cabecera
+  const [cabRows] = await conn.query(
+    `
+      SELECT
+        v.id,
+        v.fecha,
+        v.tipo_venta,
+        v.total_general,
+        v.total_afecto,
+        v.total_exento,
+        v.id_caja_sesion,
+        v.estado
+      FROM ventas v
+      WHERE v.id = ?
+      LIMIT 1
+    `,
+    [id_venta]
+  );
+
+  if (cabRows.length === 0) {
+    throw new Error("Venta no encontrada.");
+  }
+
+  const cabecera = cabRows[0];
+
+  // Detalle de productos
+  const [items] = await conn.query(
+    `
+      SELECT
+        id_producto,
+        nombre_producto,
+        cantidad,
+        precio_unitario,
+        precio_final,
+        exento_iva
+      FROM ventas_detalle
+      WHERE id_venta = ?
+    `,
+    [id_venta]
+  );
+
+  // Pagos
+  const [pagos] = await conn.query(
+    `
+      SELECT
+        tipo_pago,
+        monto
+      FROM ventas_pagos
+      WHERE id_venta = ?
+    `,
+    [id_venta]
+  );
+
+  return { cabecera, items, pagos };
+};
+
+
 

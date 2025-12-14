@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth.middleware.js";
 import { crearVentaController, crearVentaPosController, previsualizarVentaPosController,
-     listarMisVentasController, obtenerMiVentaDetalleController } from "../controllers/ventas.controller.js";
+     listarMisVentasController, obtenerMiVentaDetalleController, devolverVentaParcialController, obtenerVentaDetalleController, } from "../controllers/ventas.controller.js";
 import { anularVentaController } from "../controllers/anulaciones.controller.js";
 
 const router = Router();
@@ -16,5 +16,11 @@ router.post("/previsualizar-pos", requireAuth, previsualizarVentaPosController);
 // mis ventas
 router.get("/mis", requireAuth, listarMisVentasController);
 router.get("/mis/:id", requireAuth, obtenerMiVentaDetalleController);
+
+// Devoluciones
+router.post("/:id/devolucion", requireAuth, devolverVentaParcialController);
+router.get("/:id/detalle", requireAuth, obtenerVentaDetalleController);
+
+
 
 export default router;
