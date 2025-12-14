@@ -1,5 +1,5 @@
 import { crearVenta, previsualizarVentaPos, listarVentasUsuario, obtenerVentaDetalle, obtenerVentaDetalleAdmin } from "../services/ventas.service.js";
-import { crearVentaPos, devolverVentaParcial } from "../services/ventas.service.js";
+import { crearVentaPos, devolverVentaParcial, crearCambio } from "../services/ventas.service.js";
 import pool from "../config/db.js";
 
 export const crearVentaController = async (req, res) => {
@@ -141,6 +141,21 @@ export const obtenerVentaDetalleController = async (req, res) => {
     res.json(detalle);
   } catch (err) {
     console.error(err);
+    res.status(400).json({ error: err.message });
+  } finally {
+    conn.release();
+  }
+};
+
+export const crearCambioController = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const r = await crearCambio(req, conn);
+    await conn.commit();
+    res.json({ success: true, ...r });
+  } catch (err) {
+    await conn.rollback();
     res.status(400).json({ error: err.message });
   } finally {
     conn.release();

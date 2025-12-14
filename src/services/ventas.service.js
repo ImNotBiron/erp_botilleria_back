@@ -1065,6 +1065,14 @@ export const devolverVentaParcial = async (req, conn) => {
   };
 };
 
+/* ============================================================
+   OBTENER DETALLE DE UNA VENTA (para caja/admin)
+   ------------------------------------------------------------
+   - Devuelve cabecera + items + pagos
+   - Incluye info de devoluciones previas por producto:
+     cantidad_devuelta, cantidad_disponible
+   - Incluye resumen: devolucion.total_devuelto y devolucion.completa
+============================================================ */
 export const obtenerVentaDetalleAdmin = async (id_venta, conn) => {
   // Cabecera
   const [cabRows] = await conn.query(
@@ -1091,7 +1099,7 @@ export const obtenerVentaDetalleAdmin = async (id_venta, conn) => {
 
   const cabecera = cabRows[0];
 
-  // Detalle de productos
+  // Items vendidos
   const [items] = await conn.query(
     `
       SELECT
@@ -1119,7 +1127,311 @@ export const obtenerVentaDetalleAdmin = async (id_venta, conn) => {
     [id_venta]
   );
 
-  return { cabecera, items, pagos };
+  // ===== NUEVO: devoluciones previas por producto =====
+  const [devPorProdRows] = await conn.query(
+    `
+      SELECT
+        vdd.id_producto,
+        SUM(vdd.cantidad_devuelta) AS cantidad_devuelta
+      FROM ventas_devoluciones_detalle vdd
+      JOIN ventas_devoluciones vd ON vd.id = vdd.id_devolucion
+      WHERE vd.id_venta = ?
+      GROUP BY vdd.id_producto
+    `,
+    [id_venta]
+  );
+
+  const devMap = new Map();
+  for (const r of devPorProdRows) {
+    devMap.set(r.id_producto, Number(r.cantidad_devuelta) || 0);
+  }
+
+  // Total devuelto en dinero (para mostrar en UI)
+  const [devTotalRows] = await conn.query(
+    `
+      SELECT COALESCE(SUM(total_devuelto), 0) AS total_devuelto
+      FROM ventas_devoluciones
+      WHERE id_venta = ?
+    `,
+    [id_venta]
+  );
+
+  const total_devuelto = Number(devTotalRows?.[0]?.total_devuelto) || 0;
+
+  // Enriquecer items con devuelto y disponible
+  const itemsEnriquecidos = items.map((it) => {
+    const vendida = Number(it.cantidad) || 0;
+    const devuelta = devMap.get(it.id_producto) || 0;
+    const disponible = Math.max(0, vendida - devuelta);
+
+    return {
+      ...it,
+      cantidad_devuelta: devuelta,
+      cantidad_disponible: disponible,
+    };
+  });
+
+  // Devolución completa si todos los items quedaron sin disponible
+  const devolucion_completa =
+    itemsEnriquecidos.length > 0 &&
+    itemsEnriquecidos.every((x) => Number(x.cantidad_disponible) === 0);
+
+  return {
+    cabecera,
+    items: itemsEnriquecidos,
+    pagos,
+    devolucion: {
+      total_devuelto,
+      completa: devolucion_completa,
+    },
+  };
+};
+
+export const crearCambio = async (req, conn) => {
+  const id_usuario = req.user?.id;
+  if (!id_usuario) throw new Error("Usuario no identificado.");
+
+  const id_venta_origen = Number(req.params.id);
+  if (!id_venta_origen) throw new Error("ID de venta origen inválido.");
+
+  const { devueltos, entregados, metodo_pago_diferencia, motivo } = req.body;
+
+  if (!Array.isArray(devueltos) || devueltos.length === 0) {
+    throw new Error("Debes indicar al menos 1 producto devuelto.");
+  }
+  if (!Array.isArray(entregados) || entregados.length === 0) {
+    throw new Error("Debes indicar al menos 1 producto entregado.");
+  }
+
+  // caja abierta obligatoria (porque impacta caja y stock hoy)
+  const caja = await obtenerCajaActiva();
+  if (!caja) throw new Error("No hay caja abierta para registrar el cambio.");
+  const id_caja_sesion = caja.id;
+
+  // Traer detalle de venta origen (para precios y límites)
+  const [detalleRows] = await conn.query(
+    `
+      SELECT id_producto, cantidad, precio_unitario, exento_iva, nombre_producto
+      FROM ventas_detalle
+      WHERE id_venta = ?
+    `,
+    [id_venta_origen]
+  );
+  if (detalleRows.length === 0) throw new Error("Venta origen sin detalle.");
+
+  const detalleMap = new Map();
+  for (const r of detalleRows) detalleMap.set(r.id_producto, r);
+
+  // Ya devuelto previamente (para no pasarse)
+  const [devPrevRows] = await conn.query(
+    `
+      SELECT vdd.id_producto, SUM(vdd.cantidad_devuelta) AS cantidad_devuelta
+      FROM ventas_devoluciones_detalle vdd
+      JOIN ventas_devoluciones vd ON vd.id = vdd.id_devolucion
+      WHERE vd.id_venta = ?
+      GROUP BY vdd.id_producto
+    `,
+    [id_venta_origen]
+  );
+  const devPrevMap = new Map();
+  for (const r of devPrevRows) devPrevMap.set(r.id_producto, Number(r.cantidad_devuelta) || 0);
+
+  // 1) Calcular total_devuelto (con precios de la venta origen)
+  let total_devuelto = 0;
+  let total_devuelto_exento = 0;
+
+  const devueltosCalc = [];
+  for (const it of devueltos) {
+    const id_producto = Number(it.id_producto);
+    const cantidad = Number(it.cantidad);
+
+    if (!id_producto || cantidad <= 0) throw new Error("Devolución inválida.");
+
+    const det = detalleMap.get(id_producto);
+    if (!det) throw new Error(`Producto ${id_producto} no pertenece a la venta origen.`);
+
+    const vendida = Number(det.cantidad) || 0;
+    const yaDev = devPrevMap.get(id_producto) || 0;
+    const disponible = vendida - yaDev;
+    if (cantidad > disponible) {
+      throw new Error(`Producto ${id_producto}: disponible para devolver ${disponible}.`);
+    }
+
+    const precio_unitario = Number(det.precio_unitario) || 0;
+    const monto_linea = precio_unitario * cantidad;
+    const exento_iva = det.exento_iva ? 1 : 0;
+
+    total_devuelto += monto_linea;
+    if (exento_iva === 1) total_devuelto_exento += monto_linea;
+
+    devueltosCalc.push({
+      id_producto,
+      cantidad,
+      precio_unitario,
+      exento_iva,
+      monto_linea,
+    });
+  }
+
+  if (total_devuelto <= 0) throw new Error("Total devuelto inválido.");
+
+  // 2) Calcular total_nuevo con precios actuales (usa validarProductos)
+  // entregados: [{id_producto, cantidad}]
+  const entregadosPlanos = entregados.map((x) => ({
+    id_producto: Number(x.id_producto),
+    cantidad: Number(x.cantidad) || 1,
+  }));
+
+  const { total_general: total_nuevo, total_exento: total_nuevo_exento } =
+    await validarProductos(entregadosPlanos, conn);
+
+  if (total_nuevo <= 0) throw new Error("Total nuevo inválido.");
+
+  // Regla: nuevo >= devuelto
+  if (total_nuevo < total_devuelto) {
+    throw new Error(
+      `El total del producto nuevo (${total_nuevo}) debe ser igual o mayor al devuelto (${total_devuelto}).`
+    );
+  }
+
+  const diferencia = total_nuevo - total_devuelto;
+
+  // Si hay diferencia, método obligatorio
+  const metodosValidos = ["EFECTIVO", "GIRO", "DEBITO", "CREDITO", "TRANSFERENCIA"];
+  if (diferencia > 0 && !metodosValidos.includes(metodo_pago_diferencia)) {
+    throw new Error("Debes indicar método de pago para la diferencia.");
+  }
+
+  // 3) Insertar cabecera cambio
+  const [cambioRes] = await conn.query(
+    `
+      INSERT INTO ventas_cambios
+        (id_venta_origen, id_caja_sesion, id_usuario, motivo,
+         total_devuelto, total_nuevo, diferencia, metodo_pago_diferencia)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      id_venta_origen,
+      id_caja_sesion,
+      id_usuario,
+      motivo || null,
+      total_devuelto,
+      total_nuevo,
+      diferencia,
+      diferencia > 0 ? metodo_pago_diferencia : null,
+    ]
+  );
+  const id_cambio = cambioRes.insertId;
+
+  // 4) Guardar devueltos + movimientos stock (ENTRAN)
+  for (const d of devueltosCalc) {
+    await conn.query(
+      `
+        INSERT INTO ventas_cambios_devueltos
+          (id_cambio, id_producto, cantidad, precio_unitario, exento_iva, monto_linea)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [id_cambio, d.id_producto, d.cantidad, d.precio_unitario, d.exento_iva, d.monto_linea]
+    );
+
+    await registrarMovimientoStock({
+      conn,
+      id_producto: d.id_producto,
+      id_usuario,
+      id_caja_sesion,
+      tipo_movimiento: "CAMBIO_DEVOLUCION",
+      cantidad: d.cantidad, // entra
+      descripcion: `Cambio #${id_cambio} (devuelto) de venta #${id_venta_origen}`,
+    });
+  }
+
+  // 5) Guardar entregados + movimientos stock (SALEN)
+  for (const e of entregadosPlanos) {
+    // validarProductos muta entregadosPlanos con nombre_producto, precio_unitario, exento_iva
+    const monto_linea = (Number(e.precio_unitario) || 0) * (Number(e.cantidad) || 0);
+
+    await conn.query(
+      `
+        INSERT INTO ventas_cambios_entregados
+          (id_cambio, id_producto, cantidad, precio_unitario, exento_iva, monto_linea)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [id_cambio, e.id_producto, e.cantidad, e.precio_unitario, e.exento_iva, monto_linea]
+    );
+
+    await registrarMovimientoStock({
+      conn,
+      id_producto: e.id_producto,
+      id_usuario,
+      id_caja_sesion,
+      tipo_movimiento: "CAMBIO_ENTREGA",
+      cantidad: -e.cantidad, // sale
+      descripcion: `Cambio #${id_cambio} (entregado) por venta #${id_venta_origen}`,
+    });
+  }
+
+  // 6) Caja: registrar solo DIFERENCIA como ingreso + actualizar caja_sesiones
+  if (diferencia > 0) {
+    // actualizar caja_sesiones según método
+    const pagos = [{ tipo: metodo_pago_diferencia, monto: diferencia }];
+    const { efectivo_giro, debito, credito, transferencia } = clasificarPagos(pagos);
+
+    await conn.query(
+      `
+        UPDATE caja_sesiones
+        SET
+          total_efectivo_giro = total_efectivo_giro + ?,
+          total_debito        = total_debito        + ?,
+          total_credito       = total_credito       + ?,
+          total_transferencia = total_transferencia + ?
+        WHERE id = ?
+      `,
+      [efectivo_giro, debito, credito, transferencia, id_caja_sesion]
+    );
+
+    // (opcional) tickets: si quieres contar la diferencia como “ticket”:
+    await conn.query(
+      `
+        UPDATE caja_sesiones
+        SET
+          tickets_efectivo      = tickets_efectivo      + ?,
+          tickets_debito        = tickets_debito        + ?,
+          tickets_credito       = tickets_credito       + ?,
+          tickets_transferencia = tickets_transferencia + ?
+        WHERE id = ?
+      `,
+      [
+        (efectivo_giro > 0 ? 1 : 0),
+        (debito > 0 ? 1 : 0),
+        (credito > 0 ? 1 : 0),
+        (transferencia > 0 ? 1 : 0),
+        id_caja_sesion,
+      ]
+    );
+
+    // movimiento caja
+    await conn.query(
+      `
+        INSERT INTO caja_movimientos
+          (id_caja_sesion, tipo, categoria, monto, descripcion, id_usuario)
+        VALUES (?, 'INGRESO', 'CAMBIO', ?, ?, ?)
+      `,
+      [
+        id_caja_sesion,
+        diferencia,
+        `Cambio #${id_cambio} por venta #${id_venta_origen}`,
+        id_usuario,
+      ]
+    );
+  }
+
+  return {
+    id_cambio,
+    id_venta_origen,
+    total_devuelto,
+    total_nuevo,
+    diferencia,
+  };
 };
 
 

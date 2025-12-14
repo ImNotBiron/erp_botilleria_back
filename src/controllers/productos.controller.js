@@ -1,5 +1,7 @@
 import pool from "../config/db.js";
 
+import { buscarProductoPorCodigo } from "../services/productos.service.js";
+
 /* ======================================================
    LISTAR TODOS LOS PRODUCTOS (CON CATEGORÍA Y PROVEEDOR)
 ====================================================== */
@@ -315,5 +317,22 @@ export const obtenerProductoPorCodigo = async (req, res, next) => {
     res.json(rows[0]);
   } catch (error) {
     next(error);
+  }
+};
+
+export const obtenerProductoPorCodigoAdmin = async (req, res) => {
+  try {
+    const { codigo } = req.params;
+    if (!codigo) return res.status(400).json({ error: "Código requerido." });
+
+    const producto = await buscarProductoPorCodigo(codigo);
+    if (!producto) {
+      return res.status(404).json({ error: "Producto no encontrado." });
+    }
+
+    res.json({ producto });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message });
   }
 };

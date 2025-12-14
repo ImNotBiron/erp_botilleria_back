@@ -8,6 +8,7 @@ import {
   cambiarEstadoProducto,
   borrarProducto,
   obtenerProductoPorCodigo,
+  obtenerProductoPorCodigoAdmin,
 } from "../controllers/productos.controller.js";
 
 import { requireAuth, requireAdmin } from "../middleware/auth.middleware.js";
@@ -21,8 +22,11 @@ router.post("/", requireAuth, requireAdmin, crearProducto);
 router.put("/:id", requireAuth, requireAdmin, editarProducto);
 router.patch("/:id/estado", requireAuth, requireAdmin, cambiarEstadoProducto);
 router.delete("/:id", requireAuth, requireAdmin, borrarProducto);
+router.get("/admin/codigo/:codigo",requireAuth,requireAdmin,obtenerProductoPorCodigoAdmin);
 
 //route exclusiva para POS
 router.get("/codigo/:codigo", requireAuth, obtenerProductoPorCodigo);
+
+
 
 export default router;
