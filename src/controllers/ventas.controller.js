@@ -1,11 +1,5 @@
-<<<<<<< Updated upstream
 import { crearVenta, previsualizarVentaPos, listarVentasUsuario, obtenerVentaDetalle, obtenerVentaDetalleAdmin } from "../services/ventas.service.js";
 import { crearVentaPos, devolverVentaParcial, crearCambio } from "../services/ventas.service.js";
-=======
-import { crearVenta, previsualizarVentaPos, listarVentasUsuario, obtenerVentaDetalle,
-   obtenerVentaDetalleAdmin } from "../services/ventas.service.js";
-import { crearVentaPos, devolverVentaParcial } from "../services/ventas.service.js";
->>>>>>> Stashed changes
 import pool from "../config/db.js";
 
 export const crearVentaController = async (req, res) => {
