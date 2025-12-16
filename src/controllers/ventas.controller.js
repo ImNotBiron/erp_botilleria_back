@@ -1,6 +1,16 @@
-import { crearVenta, previsualizarVentaPos, listarVentasUsuario, obtenerVentaDetalle, obtenerVentaDetalleAdmin } from "../services/ventas.service.js";
-import { crearVentaPos, devolverVentaParcial, crearCambio } from "../services/ventas.service.js";
+import {
+  crearVenta,
+  previsualizarVentaPos,
+  listarVentasUsuario,
+  obtenerVentaDetalle,
+  obtenerVentaDetalleAdmin,
+  crearVentaPos,
+  devolverVentaParcial,
+  crearCambio,
+} from "../services/ventas.service.js";
+
 import pool from "../config/db.js";
+
 
 export const crearVentaController = async (req, res) => {
   const conn = await pool.getConnection();
