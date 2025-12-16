@@ -167,7 +167,20 @@ export const crearVenta = async (req, conn) => {
   // ========================================================
   validarPagos(pagos, total_general, total_exento_final, tipoVenta);
 
-    // ========================================================
+  // ========================================================
+  //   CALCULAR MONTOS EFECTIVO / NO EFECTIVO / BOLETEABLE
+  // ========================================================
+  const { efectivo_giro, debito, credito, transferencia } = clasificarPagos(pagos);
+
+  const monto_efectivo_total = Number(efectivo_giro) || 0;
+  const monto_no_efectivo_total =
+    (Number(debito) || 0) + (Number(credito) || 0) + (Number(transferencia) || 0);
+
+  // Criterio: "por boletear" = lo pagado en efectivo (y giro si lo consideras efectivo)
+  // En venta INTERNA no aplica SII -> lo dejamos en 0
+  const monto_boleteable = tipoVenta === "NORMAL" ? monto_efectivo_total : 0;
+
+  // ========================================================
   // 5) INSERTAR CABECERA DE LA VENTA
   // ========================================================
   const [ventaRes] = await conn.query(
@@ -179,18 +192,24 @@ export const crearVenta = async (req, conn) => {
         total_general,
         total_afecto,
         total_exento,
+        monto_efectivo_total,
+        monto_no_efectivo_total,
+        monto_boleteable,
         nota_interna,
         boleteado
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
     `,
     [
       id_usuario,
       id_caja_sesion,
       tipoVenta,
-      total_general,        // <-- puede ser total_base o total_interno
-      total_afecto,         // <-- si es interna, queda igual al monto interno
-      total_exento_final,   // <-- internas = 0
+      total_general,
+      total_afecto,
+      total_exento_final,
+      monto_efectivo_total,
+      monto_no_efectivo_total,
+      monto_boleteable,
       tipoVenta === "INTERNA" ? (nota_interna || null) : null,
     ]
   );
@@ -218,7 +237,6 @@ export const crearVenta = async (req, conn) => {
   // 7) INSERTAR DETALLE + 8) ACTUALIZAR STOCK
   // ========================================================
   for (const it of items) {
-    // Insertar detalle
     await conn.query(
       `
         INSERT INTO ventas_detalle
@@ -229,7 +247,7 @@ export const crearVenta = async (req, conn) => {
       [
         id_venta,
         it.id_producto,
-        it.nombre_producto,       
+        it.nombre_producto,
         it.cantidad,
         it.precio_unitario,
         it.precio_unitario * it.cantidad,
@@ -237,7 +255,6 @@ export const crearVenta = async (req, conn) => {
       ]
     );
 
-    // Movimiento de stock
     await registrarMovimientoStock({
       conn,
       id_producto: it.id_producto,
@@ -256,7 +273,7 @@ export const crearVenta = async (req, conn) => {
     conn,
     id_caja_sesion,
     pagos,
-    total_exento_final,  // <-- si es interna, 0
+    total_exento_final,
     tipoVenta
   );
 
@@ -280,8 +297,12 @@ export const crearVenta = async (req, conn) => {
     total_general,
     total_afecto,
     total_exento: total_exento_final,
+    monto_efectivo_total,
+    monto_no_efectivo_total,
+    monto_boleteable,
   };
 };
+
 
 
 // ID/CÓDIGO del producto "Hielo 1kg" (se usará codigo_producto, no id fijo)

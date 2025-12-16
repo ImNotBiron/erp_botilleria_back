@@ -14,7 +14,7 @@ import categoriasRoutes from "./routes/categorias.routes.js";
 import proveedoresRoutes from "./routes/proveedores.routes.js";
 import promocionesRoutes from "./routes/promociones.routes.js";
 import ventasRoutes from "./routes/ventas.routes.js";
-
+import dashboardRouter from "./routes/dashboard.routes.js";
 
 const app = express();
 
@@ -40,6 +40,7 @@ app.use("/api/categorias", categoriasRoutes);
 app.use("/api/proveedores", proveedoresRoutes);
 app.use("/api/promociones", promocionesRoutes);
 app.use("/api/ventas", ventasRoutes);
+app.use("/api/dashboard", dashboardRouter);
 
 
 // Healthcheck básico
