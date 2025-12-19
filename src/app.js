@@ -18,14 +18,35 @@ import dashboardRouter from "./routes/dashboard.routes.js";
 
 const app = express();
 
-// Middlewares globales
-app.use(cors({
-  origin: [
-    "https://botilleriaelparaiso.cl",
-    "http://localhost:5173"
-  ],
-  credentials: true,
-}));
+const allowedOrigins = [
+  "https://botilleriaelparaiso.cl",
+  "http://localhost:5173",
+  "http://localhost",
+  "https://localhost",
+  "capacitor://localhost",
+];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Permitir requests sin origin (Postman, curl, backend-to-backend)
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`CORS bloqueado para origin: ${origin}`));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
+// Necesario para preflight OPTIONS
+app.options("*", cors());
+
 
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
