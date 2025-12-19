@@ -18,7 +18,9 @@ import dashboardRouter from "./routes/dashboard.routes.js";
 
 const app = express();
 
-// Middlewares globales
+// =======================
+// CORS (CORREGIDO)
+// =======================
 const allowedOrigins = [
   "https://botilleriaelparaiso.cl",
   "http://localhost:5173",
@@ -30,6 +32,7 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
+      // Permitir requests sin origin (curl, postman, server-to-server)
       if (!origin) return callback(null, true);
 
       if (allowedOrigins.includes(origin)) {
@@ -44,15 +47,18 @@ app.use(
   })
 );
 
+// ❌ ELIMINADO:
+// app.options("*", cors());
 
-// Necesario para preflight OPTIONS
-app.options("*", cors());
-
-
+// =======================
+// Body parsers
+// =======================
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
+// =======================
 // Rutas
+// =======================
 app.use("/api/auth", authRoutes);
 app.use("/api/caja", cajaRoutes);
 app.use("/api/boletas", boletasRoutes);
@@ -64,22 +70,21 @@ app.use("/api/promociones", promocionesRoutes);
 app.use("/api/ventas", ventasRoutes);
 app.use("/api/dashboard", dashboardRouter);
 
-
-// Healthcheck básico
+// =======================
+// Healthcheck
+// =======================
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, message: "ERP Botillería API OK" });
 });
 
-// Manejo global de errores
+// =======================
+// Error handler
+// =======================
 app.use((err, req, res, next) => {
   console.error("ERROR BACKEND:", err);
-  res
-    .status(err.status || 500)
-    .json({ error: err.message || "Error interno del servidor" });
+  res.status(err.status || 500).json({
+    error: err.message || "Error interno del servidor",
+  });
 });
-
-
-
-
 
 export default app;
