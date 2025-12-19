@@ -18,6 +18,7 @@ import dashboardRouter from "./routes/dashboard.routes.js";
 
 const app = express();
 
+// Middlewares globales
 const allowedOrigins = [
   "https://botilleriaelparaiso.cl",
   "http://localhost:5173",
@@ -29,7 +30,6 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Permitir requests sin origin (Postman, curl, backend-to-backend)
       if (!origin) return callback(null, true);
 
       if (allowedOrigins.includes(origin)) {
@@ -43,6 +43,7 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
 
 // Necesario para preflight OPTIONS
 app.options("*", cors());
